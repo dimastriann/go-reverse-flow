@@ -8,9 +8,10 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 
 | Status | Feature |
 |---|---|
-| 📋 planned | 🔁 Reverse proxy (forward requests to backend servers) |
-| 📋 planned | ⚖️ Round-robin load balancing |
-| 📋 planned | ⚡ Concurrent request handling (goroutines) |
+| ✅ v0.1.0 | 🔁 Reverse proxy (forward requests to backend servers) |
+| ✅ v0.1.0 | ⚖️ Round-robin load balancing |
+| ✅ v0.1.0 | ⚡ Concurrent request handling (goroutines) |
+| ✅ v0.1.0 | 🛑 Graceful shutdown (SIGINT/SIGTERM drains in-flight requests) |
 | 📋 planned | ❤️ Health checks (skip unhealthy backends) |
 | 📋 planned | 📝 Request logging |
 | 📋 planned | 🐳 Docker support |
