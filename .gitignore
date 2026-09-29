@@ -1,0 +1,16 @@
+# Local roadmap — never commit
+roadmap.local.md
+
+# Binaries
+*.exe
+*.exe~
+/bin/
+
+# Go build/test artifacts
+*.out
+coverage.*
+
+# IDE / OS noise
+.idea/
+.vscode/
+Thumbs.db
