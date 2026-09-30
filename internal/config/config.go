@@ -7,16 +7,67 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"time"
 )
 
 const (
 	DefaultListenAddr = ":8080"
+
+	// Default health-check settings, used when the JSON values are absent.
+	DefaultHealthInterval = 5 * time.Second
+	DefaultHealthTimeout  = time.Second
 )
+
+// Duration is time.Duration with human-friendly JSON parsing: accepts Go
+// duration strings like "500ms", "5s", or "2m" (plain integers are treated as
+// whole seconds for convenience).
+type Duration time.Duration
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return fmt.Errorf("duration %s: %w", data, err)
+	}
+	switch value := v.(type) {
+	case string:
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("duration %q: %w", value, err)
+		}
+		*d = Duration(parsed)
+	case float64:
+		*d = Duration(time.Duration(value * float64(time.Second)))
+	default:
+		return fmt.Errorf("duration %s: must be a string like \"5s\" or a number of seconds", data)
+	}
+	return nil
+}
 
 // Config is the top-level proxy configuration.
 type Config struct {
-	ListenAddr string   `json:"listen_addr"`
-	Backends   []string `json:"backends"`
+	ListenAddr string         `json:"listen_addr"`
+	Backends   []string       `json:"backends"`
+	Health     HealthSettings `json:"health,omitempty"`
+}
+
+// HealthSettings controls the periodic backend probe.
+type HealthSettings struct {
+	Interval *Duration `json:"interval,omitempty"` // sweep cadence
+	Timeout  *Duration `json:"timeout,omitempty"`  // per-probe request timeout
+}
+
+// Values resolves pointers into concrete durations with defaults applied.
+func (h HealthSettings) Values() (interval, timeout time.Duration) {
+	interval = DefaultHealthInterval
+	timeout = DefaultHealthTimeout
+	if h.Interval != nil && *h.Interval > 0 {
+		interval = time.Duration(*h.Interval)
+	}
+	if h.Timeout != nil && *h.Timeout > 0 {
+		timeout = time.Duration(*h.Timeout)
+	}
+	return interval, timeout
 }
 
 // Load reads the JSON config file at path and validates it.
