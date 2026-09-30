@@ -1,12 +1,12 @@
 // Command proxy runs the go-reverse-flow reverse proxy: it loads the JSON
-// config, builds the round-robin proxy handler, and serves until Ctrl+C.
+// config, starts the health checker, builds the round-robin proxy handler,
+// and serves until Ctrl+C.
 package main
 
 import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -17,15 +17,17 @@ import (
 
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
 	"github.com/dimastriann/go-reverse-flow/internal/config"
+	"github.com/dimastriann/go-reverse-flow/internal/health"
 	"github.com/dimastriann/go-reverse-flow/internal/proxy"
 )
 
-// defaultConfigPath is used when -config is not given. Running `go run ./cmd/proxy`
-// from the repo root uses ./config/config.json.
-const defaultConfigPath = "config/config.json"
+const (
+	// defaultConfigPath is used when -config is not given.
+	defaultConfigPath = "config/config.json"
 
-// shutdownTimeout bounds how long in-flight requests may finish after Ctrl+C.
-const shutdownTimeout = 10 * time.Second
+	// shutdownTimeout bounds how long in-flight requests may finish after Ctrl+C.
+	shutdownTimeout = 10 * time.Second
+)
 
 func main() {
 	cfgPath := flag.String("config", defaultConfigPath, "path to JSON config file")
@@ -45,7 +47,16 @@ func main() {
 		backends[i] = u
 	}
 
-	handler, err := proxy.New(backends, &balancer.Balancer{})
+	interval, probeTimeout := cfg.Health.Values()
+	checker := health.New(cfg.Backends, probeTimeout, health.WithTransitionHook(func(backend string, up bool) {
+		if up {
+			log.Printf("health: backend %s is UP", backend)
+			return
+		}
+		log.Printf("health: backend %s is DOWN", backend)
+	}))
+
+	handler, err := proxy.New(backends, &balancer.Balancer{}, proxy.WithHealth(checker))
 	if err != nil {
 		log.Fatalf("proxy: %v", err)
 	}
@@ -61,12 +72,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Checker probes are killed exactly when the server context dies.
+	checker.Start(ctx, interval)
+
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("proxy: listening on %s over %d backend(s)", cfg.ListenAddr, len(backends))
 		for i, u := range backends {
 			log.Printf("proxy: backends[%d] = %s", i, u)
 		}
+		log.Printf("health: probing every %s (timeout %s)", interval, probeTimeout)
+
 		// Serve returns http.ErrServerClosed on graceful shutdown, which is
 		// expected — anything else is fatal.
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -81,7 +97,7 @@ func main() {
 			log.Fatalf("server: %v", err)
 		}
 	case <-ctx.Done():
-		fmt.Fprintln(os.Stderr, "shutting down: waiting for in-flight requests…")
+		log.Printf("shutting down: draining in-flight requests…")
 		shCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shCtx); err != nil {

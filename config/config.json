@@ -3,5 +3,9 @@
     "backends": [
         "http://localhost:8001",
         "http://localhost:8002"
-    ]
+    ],
+    "health": {
+        "interval": "5s",
+        "timeout": "1s"
+    }
 }
