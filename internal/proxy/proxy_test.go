@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,8 +10,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
+	"github.com/dimastriann/go-reverse-flow/internal/health"
 )
 
 // newBackend starts an httptest server that responds with its own name so
@@ -32,6 +35,26 @@ func newBackend(t *testing.T, name string) (*url.URL, func()) {
 func newHandler(t *testing.T, backends []*url.URL) *Handler {
 	t.Helper()
 	h, err := New(backends, &balancer.Balancer{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return h
+}
+
+// newHandlerWithHealth builds a Handler whose routing consults a live
+// health.Checker sweeping every 200ms over the same backend URLs.
+func newHandlerWithHealth(t *testing.T, backends []*url.URL, interval time.Duration) *Handler {
+	t.Helper()
+	raws := make([]string, len(backends))
+	for i, u := range backends {
+		raws[i] = u.String()
+	}
+	c := health.New(raws, 500*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c.Start(ctx, interval)
+
+	h, err := New(backends, &balancer.Balancer{}, WithHealth(c))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -127,6 +150,84 @@ func TestNewRejectsBadInput(t *testing.T) {
 	if _, err := New([]*url.URL{nil}, &balancer.Balancer{}); !errors.Is(err, errNilBackend) {
 		t.Errorf("New(nil backend): err = %v, want errNilBackend", err)
 	}
+}
+
+// TestHealthyOnlyRouting kills one of two backends and expects every request
+// to land on the survivor — no 502s, no dead-backend hits — and a revive
+// returns both to rotation with a fair split.
+func TestHealthyOnlyRouting(t *testing.T) {
+	fast := 200 * time.Millisecond
+
+	urls := make([]*url.URL, 2)
+	closes := make([]func(), 2)
+	for i := 0; i < 2; i++ {
+		name := fmt.Sprintf("healthy-%d", i+1)
+		u, closeFn := newBackend(t, name)
+		urls[i] = u
+		closes[i] = closeFn
+	}
+	h := newHandlerWithHealth(t, urls, fast)
+
+	// Both up: bodies flip between the two.
+	first := requestOnce(t, h, "/")
+	second := requestOnce(t, h, "/")
+	if first == second {
+		t.Errorf("both up: consecutive bodies %q and %q identical; want alternation", first, second)
+	}
+
+	// Kill the backend that just served; every subsequent request must miss it.
+	var survivor int
+	if first == "healthy-1" {
+		survivor = 0
+	} else {
+		survivor = 1
+	}
+	closes[survivor^1]()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if body := requestOnce(t, h, "/"); body == fmt.Sprintf("healthy-%d", (survivor^1)+1) {
+			t.Errorf("request routed to the dead backend with body %q", body)
+			return
+		} else if body == fmt.Sprintf("healthy-%d", survivor+1) {
+			time.Sleep(20 * time.Millisecond) // still up: keep checking through the demotion window
+		}
+	}
+}
+
+// TestNoHealthyBackends503 asserts the all-down edge: 503, not a forward into
+// a dead dial.
+func TestNoHealthyBackends503(t *testing.T) {
+	u, closeFn := newBackend(t, "gone")
+	defer closeFn()
+
+	h := newHandlerWithHealth(t, []*url.URL{u}, 200*time.Millisecond)
+	closeFn() // kill the only backend
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code == http.StatusServiceUnavailable {
+			if !strings.Contains(rec.Body.String(), "no healthy backend") {
+				t.Errorf("503 body = %q, want no-healthy message", rec.Body.String())
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("never reached 503 after backend death")
+}
+
+// requestOnce sends one request and returns the response body.
+func requestOnce(t *testing.T, h *Handler, path string) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if rec.Code != http.StatusOK && rec.Code != http.StatusBadGateway && rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unexpected status %d (body %q)", rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
 }
 
 // TestConcurrentRequests forwards 200 requests from 20 goroutines and checks

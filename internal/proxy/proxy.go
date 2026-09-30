@@ -14,6 +14,7 @@ import (
 	"net/url"
 
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
+	"github.com/dimastriann/go-reverse-flow/internal/health"
 )
 
 var (
@@ -25,12 +26,26 @@ var (
 // Handler is an http.Handler that load-balances requests over backends.
 type Handler struct {
 	proxies []*httputil.ReverseProxy
+	urls    []string // parallel to proxies, for health lookups
+	index   map[string]int
 	bal     *balancer.Balancer
+	health  *health.Checker // optional; nil means route blindly
+}
+
+// Option configures a Handler.
+type Option func(*Handler)
+
+// WithHealth enables health-aware routing: the round-robin pointer walks only
+// over the backends the checker currently reports up.
+func WithHealth(c *health.Checker) Option {
+	return func(h *Handler) {
+		h.health = c
+	}
 }
 
 // New builds one ReverseProxy per backend URL. All listeners should exist by
 // the time New is called; New itself performs no network I/O.
-func New(backends []*url.URL, bal *balancer.Balancer) (*Handler, error) {
+func New(backends []*url.URL, bal *balancer.Balancer, opts ...Option) (*Handler, error) {
 	if len(backends) == 0 {
 		return nil, errNoBackends
 	}
@@ -38,7 +53,12 @@ func New(backends []*url.URL, bal *balancer.Balancer) (*Handler, error) {
 		return nil, errNilBalancer
 	}
 
-	h := &Handler{proxies: make([]*httputil.ReverseProxy, len(backends)), bal: bal}
+	h := &Handler{
+		proxies: make([]*httputil.ReverseProxy, len(backends)),
+		urls:    make([]string, len(backends)),
+		index:   make(map[string]int, len(backends)),
+		bal:     bal,
+	}
 	for i, target := range backends {
 		if target == nil {
 			return nil, fmt.Errorf("%w (index %d)", errNilBackend, i)
@@ -49,11 +69,30 @@ func New(backends []*url.URL, bal *balancer.Balancer) (*Handler, error) {
 			http.Error(w, "backend unavailable", http.StatusBadGateway)
 		}
 		h.proxies[i] = rp
+		h.urls[i] = target.String()
+		h.index[target.String()] = i
+	}
+	for _, opt := range opts {
+		opt(h)
 	}
 	return h, nil
 }
 
-// ServeHTTP forwards the request to the next backend in round-robin order.
+// ServeHTTP forwards the request to the next backend. With health routing
+// enabled the round-robin pointer distributes over currently healthy
+// backends only; when no backend is up it answers 503 rather than retrying
+// blindly into the void.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.health != nil {
+		ups := h.health.HealthyOf()
+		if len(ups) == 0 {
+			http.Error(w, "no healthy backend available", http.StatusServiceUnavailable)
+			return
+		}
+		pos := h.bal.Next(len(ups))
+		h.proxies[h.index[ups[pos]]].ServeHTTP(w, r)
+		return
+	}
+
 	h.proxies[h.bal.Next(len(h.proxies))].ServeHTTP(w, r)
 }
