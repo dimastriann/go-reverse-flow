@@ -138,7 +138,7 @@ func TestUnknownBackendReportsUnhealthy(t *testing.T) {
 	}
 }
 
-// TestHealthOfOnlyReturnsUp checks the summary helper.
+// TestHealthyOfOnlyReturnsUp checks the summary helper.
 func TestHealthOfOnlyReturnsUp(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -153,6 +153,21 @@ func TestHealthOfOnlyReturnsUp(t *testing.T) {
 	got := c.HealthyOf()
 	if len(got) != 1 || got[0] != srv.URL {
 		t.Errorf("HealthyOf() = %v, want [%s]", got, srv.URL)
+	}
+}
+
+// TestHealthyOfOrderIsStable pins the contract HealthyOf promises to the
+// proxy's round-robin parity: repeated snapshots over an unchanged healthy
+// set must be byte-identical (map iteration alone would shuffle them).
+func TestHealthyOfOrderIsStable(t *testing.T) {
+	c := New([]string{"http://c:3", "http://a:1", "http://b:2"}, 50*time.Millisecond)
+
+	first := c.HealthyOf()
+	for i := 0; i < 200; i++ {
+		again := c.HealthyOf()
+		if len(again) != 3 || again[0] != "http://a:1" || again[1] != "http://b:2" || again[2] != "http://c:3" {
+			t.Fatalf("iteration %d: HealthyOf() = %v, want fixed order [a b c], first snapshot was %v", i, again, first)
+		}
 	}
 }
 

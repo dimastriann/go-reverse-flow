@@ -18,6 +18,7 @@ import (
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
 	"github.com/dimastriann/go-reverse-flow/internal/config"
 	"github.com/dimastriann/go-reverse-flow/internal/health"
+	"github.com/dimastriann/go-reverse-flow/internal/logging"
 	"github.com/dimastriann/go-reverse-flow/internal/proxy"
 )
 
@@ -60,12 +61,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("proxy: %v", err)
 	}
+	accessLog := logging.New(handler) // one structured line per request
 
 	// ReadHeaderTimeout guards slowloris-style connections; other timeouts
 	// stay at zero because proxied streams may legitimately be long-lived.
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           handler,
+		Handler:           accessLog,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

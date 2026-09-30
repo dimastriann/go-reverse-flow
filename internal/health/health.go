@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 )
@@ -131,16 +132,21 @@ func (c *Checker) Healthy(url string) bool {
 	return c.healthy[url]
 }
 
-// HealthyOf returns the URLs currently known to be up, in arbitrary order.
+// HealthyOf returns the URLs currently known to be up, sorted
+// lexicographically so successive snapshots have stable order — the
+// round-robin counter in the proxy assumes member-position parity between
+// calls while the healthy set stays unchanged.
 func (c *Checker) HealthyOf() []string {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	out := make([]string, 0, len(c.healthy))
 	for u, up := range c.healthy {
 		if up {
 			out = append(out, u)
 		}
 	}
+	c.mu.RUnlock()
+
+	sort.Strings(out)
 	return out
 }
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
 	"github.com/dimastriann/go-reverse-flow/internal/health"
+	"github.com/dimastriann/go-reverse-flow/internal/logging"
 )
 
 var (
@@ -83,16 +84,33 @@ func New(backends []*url.URL, bal *balancer.Balancer, opts ...Option) (*Handler,
 // backends only; when no backend is up it answers 503 rather than retrying
 // blindly into the void.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	idx, status := h.pick()
+	if status != nil {
+		http.Error(w, status.message, status.code)
+		return
+	}
+	// Report the chosen backend to an outer logging middleware when present.
+	if info := logging.From(r.Context()); info != nil {
+		info.Backend = h.urls[idx]
+	}
+	h.proxies[idx].ServeHTTP(w, r)
+}
+
+// pickStatus bundles the early-return failure modes of routing.
+type pickStatus struct {
+	code    int
+	message string
+}
+
+// pick chooses the next backend index and reports failure modes.
+func (h *Handler) pick() (int, *pickStatus) {
 	if h.health != nil {
 		ups := h.health.HealthyOf()
 		if len(ups) == 0 {
-			http.Error(w, "no healthy backend available", http.StatusServiceUnavailable)
-			return
+			return 0, &pickStatus{code: http.StatusServiceUnavailable, message: "no healthy backend available"}
 		}
 		pos := h.bal.Next(len(ups))
-		h.proxies[h.index[ups[pos]]].ServeHTTP(w, r)
-		return
+		return h.index[ups[pos]], nil
 	}
-
-	h.proxies[h.bal.Next(len(h.proxies))].ServeHTTP(w, r)
+	return h.bal.Next(len(h.proxies)), nil
 }
