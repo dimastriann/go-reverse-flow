@@ -19,6 +19,7 @@ import (
 	"github.com/dimastriann/go-reverse-flow/internal/config"
 	"github.com/dimastriann/go-reverse-flow/internal/health"
 	"github.com/dimastriann/go-reverse-flow/internal/logging"
+	"github.com/dimastriann/go-reverse-flow/internal/metrics"
 	"github.com/dimastriann/go-reverse-flow/internal/proxy"
 )
 
@@ -57,17 +58,26 @@ func main() {
 		log.Printf("health: backend %s is DOWN", backend)
 	}))
 
-	handler, err := proxy.New(backends, &balancer.Balancer{}, proxy.WithHealth(checker))
+	scrape := metrics.New(metrics.WithStatusSource(checker.Statuses))
+	handler, err := proxy.New(backends, &balancer.Balancer{},
+		proxy.WithHealth(checker),
+		proxy.WithMetrics(scrape),
+	)
 	if err != nil {
 		log.Fatalf("proxy: %v", err)
 	}
 	accessLog := logging.New(handler) // one structured line per request
 
+	// /metrics serves the counter/gauge exposition; everything else is proxied.
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", scrape.Handler())
+	mux.Handle("/", accessLog)
+
 	// ReadHeaderTimeout guards slowloris-style connections; other timeouts
 	// stay at zero because proxied streams may legitimately be long-lived.
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           accessLog,
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
