@@ -1,0 +1,14 @@
+bin/
+dist/
+*.exe
+*.out
+.git/
+.github/
+roadmap.local.md
+config/config-docker.json
+docker/
+docker-compose.yml
+Dockerfile
+README.md
+LICENSE
+AGENTS.md
