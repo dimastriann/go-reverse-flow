@@ -137,16 +137,26 @@ func (c *Checker) Healthy(url string) bool {
 // round-robin counter in the proxy assumes member-position parity between
 // calls while the healthy set stays unchanged.
 func (c *Checker) HealthyOf() []string {
-	c.mu.RLock()
-	out := make([]string, 0, len(c.healthy))
-	for u, up := range c.healthy {
+	statuses := c.Statuses()
+	out := make([]string, 0, len(statuses))
+	for u, up := range statuses {
 		if up {
 			out = append(out, u)
 		}
 	}
-	c.mu.RUnlock()
-
 	sort.Strings(out)
+	return out
+}
+
+// Statuses returns a copy of the latest known verdict for every tracked
+// backend URL.
+func (c *Checker) Statuses() map[string]bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[string]bool, len(c.healthy))
+	for u, up := range c.healthy {
+		out[u] = up
+	}
 	return out
 }
 
