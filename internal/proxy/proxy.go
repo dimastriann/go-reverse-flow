@@ -16,6 +16,7 @@ import (
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
 	"github.com/dimastriann/go-reverse-flow/internal/health"
 	"github.com/dimastriann/go-reverse-flow/internal/logging"
+	"github.com/dimastriann/go-reverse-flow/internal/metrics"
 )
 
 var (
@@ -30,7 +31,8 @@ type Handler struct {
 	urls    []string // parallel to proxies, for health lookups
 	index   map[string]int
 	bal     *balancer.Balancer
-	health  *health.Checker // optional; nil means route blindly
+	health  *health.Checker    // optional; nil means route blindly
+	metrics *metrics.Collector // optional; nil means no counting
 }
 
 // Option configures a Handler.
@@ -41,6 +43,14 @@ type Option func(*Handler)
 func WithHealth(c *health.Checker) Option {
 	return func(h *Handler) {
 		h.health = c
+	}
+}
+
+// WithMetrics enables per-backend request counting on every forwarded
+// request (503 paths do not count: no backend was chosen).
+func WithMetrics(c *metrics.Collector) Option {
+	return func(h *Handler) {
+		h.metrics = c
 	}
 }
 
@@ -92,6 +102,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Report the chosen backend to an outer logging middleware when present.
 	if info := logging.From(r.Context()); info != nil {
 		info.Backend = h.urls[idx]
+	}
+	if h.metrics != nil {
+		h.metrics.Count(h.urls[idx])
 	}
 	h.proxies[idx].ServeHTTP(w, r)
 }

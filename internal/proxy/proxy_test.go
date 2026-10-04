@@ -14,6 +14,7 @@ import (
 
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
 	"github.com/dimastriann/go-reverse-flow/internal/health"
+	"github.com/dimastriann/go-reverse-flow/internal/metrics"
 )
 
 // newBackend starts an httptest server that responds with its own name so
@@ -227,6 +228,97 @@ func requestOnce(t *testing.T, h *Handler, path string) string {
 	if rec.Code != http.StatusOK && rec.Code != http.StatusBadGateway && rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unexpected status %d (body %q)", rec.Code, rec.Body.String())
 	}
+	return rec.Body.String()
+}
+
+// TestMetricsCountOnlyForwarded drives requests through a metrics-wired
+// handler: plain totals must match forwarded requests exactly (5 over a
+// single live backend). The 503 exclusion lives in its own test below.
+func TestMetricsCountOnlyForwarded(t *testing.T) {
+	u, closeFn := newBackend(t, "counted")
+	defer closeFn()
+
+	m := metrics.New()
+	h, err := New([]*url.URL{u}, &balancer.Balancer{}, WithMetrics(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status %d, want 200", i, rec.Code)
+		}
+	}
+
+	// Kill the backend and assert totals; the 503 exclusion is verified in
+	// TestMetrics503PathsDoNotCount.
+	render := metricsRenderFor(t, m)
+	if !strings.Contains(render, fmt.Sprintf("grf_backend_requests_total{backend=%q} 5\n", u.String())) {
+		t.Errorf("metrics missing exact 5 for %s:\n%s", u.String(), render)
+	}
+}
+
+// TestMetrics503PathsDoNotCount verifies the all-down path contributes no
+// counts on any bucket. Strictly after the checker has demoted the only
+// backend (no counting can race the demotion window), every request must be
+// a bare 503 with zeroed buckets.
+func TestMetrics503PathsDoNotCount(t *testing.T) {
+	u, closeFn := newBackend(t, "vapor")
+	defer closeFn()
+
+	m := metrics.New()
+	c := health.New([]string{u.String()}, 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx, 200*time.Millisecond)
+
+	h, err := New([]*url.URL{u}, &balancer.Balancer{}, WithHealth(c), WithMetrics(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	closeFn() // only backend dies
+
+	// Demotion first; only then does a 503 become the steady behavior.
+	demoted := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := gotHealthy(c, u); !got {
+			demoted = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !demoted {
+		t.Fatal("backend never demoted; timing test premise broken")
+	}
+
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("request %d: status %d, want 503", i, rec.Code)
+		}
+	}
+
+	render := metricsRenderFor(t, m)
+	if strings.Contains(render, "} 1\n") || strings.Contains(render, "} 2\n") {
+		t.Errorf("503 requests bumped counters:\n%s", render)
+	}
+}
+
+// gotHealthy reads the checker's verdict for the backend.
+func gotHealthy(c *health.Checker, u *url.URL) bool {
+	return c.Healthy(u.String())
+}
+
+// metricsRenderFor scrapes the collector like a client would.
+func metricsRenderFor(t *testing.T, m *metrics.Collector) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	m.Handler().ServeHTTP(rec, req)
 	return rec.Body.String()
 }
 
