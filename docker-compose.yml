@@ -1,0 +1,33 @@
+name: go-reverse-flow-demo
+
+services:
+  proxy:
+    build: .
+    image: go-reverse-flow:demo
+    ports:
+      - "8080:8080"
+    command: ["-config", "/etc/grf/config-docker.json"]
+    volumes:
+      - ./config/config-docker.json:/etc/grf/config-docker.json:ro
+    depends_on:
+      - backend-1
+      - backend-2
+      - backend-3
+
+  backend-1:
+    image: python:3.13-alpine
+    volumes:
+      - ./docker/demo/b1:/srv:ro
+    command: ["python", "-m", "http.server", "8001", "--directory", "/srv"]
+
+  backend-2:
+    image: python:3.13-alpine
+    volumes:
+      - ./docker/demo/b2:/srv:ro
+    command: ["python", "-m", "http.server", "8002", "--directory", "/srv"]
+
+  backend-3:
+    image: python:3.13-alpine
+    volumes:
+      - ./docker/demo/b3:/srv:ro
+    command: ["python", "-m", "http.server", "8003", "--directory", "/srv"]
