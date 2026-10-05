@@ -16,6 +16,9 @@ const (
 	// Default health-check settings, used when the JSON values are absent.
 	DefaultHealthInterval = 5 * time.Second
 	DefaultHealthTimeout  = time.Second
+
+	// Default rate-limit settings: throttling starts disabled.
+	DefaultRateBurst = 1
 )
 
 // Duration is time.Duration with human-friendly JSON parsing: accepts Go
@@ -49,6 +52,7 @@ type Config struct {
 	ListenAddr string         `json:"listen_addr"`
 	Backends   []string       `json:"backends"`
 	Health     HealthSettings `json:"health,omitempty"`
+	RateLimit  RateSettings   `json:"rate_limiter,omitempty"`
 }
 
 // HealthSettings controls the periodic backend probe.
@@ -68,6 +72,25 @@ func (h HealthSettings) Values() (interval, timeout time.Duration) {
 		timeout = time.Duration(*h.Timeout)
 	}
 	return interval, timeout
+}
+
+// RateSettings enables per-client token-bucket throttling when rate > 0.
+type RateSettings struct {
+	Rate  *float64 `json:"rate,omitempty"`  // tokens per second, 0 disables
+	Burst *int     `json:"burst,omitempty"` // bucket ceiling, needed when rate > 0
+}
+
+// Values resolves the knobs with defaults applied (nothing set = disabled).
+func (s RateSettings) Values() (rate float64, burst int) {
+	if s.Rate == nil || *s.Rate <= 0 {
+		return 0, 0
+	}
+	rate = *s.Rate
+	burst = 1
+	if s.Burst != nil && *s.Burst > 0 {
+		burst = *s.Burst
+	}
+	return rate, burst
 }
 
 // Load reads the JSON config file at path and validates it.

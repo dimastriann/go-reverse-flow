@@ -140,6 +140,36 @@ func TestLoadHealthSettingsVariants(t *testing.T) {
 	}
 }
 
+// TestRateSettingsResolution pins the knob semantics.
+func TestRateSettingsResolution(t *testing.T) {
+	tests := []struct {
+		name      string
+		json      string
+		wantRate  float64
+		wantBurst int
+	}{
+		{name: "absent means disabled", json: `{"backends":["http://x:1"]}`},
+		{name: "explicit zero disables", json: `{"backends":["http://x:1"],"rate_limiter":{"rate":0,"burst":50}}`},
+		{name: "negative disables", json: `{"backends":["http://x:1"],"rate_limiter":{"rate":-5,"burst":50}}`},
+		{name: "rate without burst defaults burst 1", json: `{"backends":["http://x:1"],"rate_limiter":{"rate":2.5}}`, wantRate: 2.5, wantBurst: 1},
+		{name: "rate with burst honored", json: `{"backends":["http://x:1"],"rate_limiter":{"rate":2.5,"burst":100}}`, wantRate: 2.5, wantBurst: 100},
+		{name: "burst without rate ignored", json: `{"backends":["http://x:1"],"rate_limiter":{"burst":100}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Load(writeFixture(t, tt.json))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			gotRate, gotBurst := cfg.RateLimit.Values()
+			if gotRate != tt.wantRate || gotBurst != tt.wantBurst {
+				t.Errorf("Values() = (%v, %v), want (%v, %v)", gotRate, gotBurst, tt.wantRate, tt.wantBurst)
+			}
+		})
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string

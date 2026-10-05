@@ -21,6 +21,7 @@ import (
 	"github.com/dimastriann/go-reverse-flow/internal/logging"
 	"github.com/dimastriann/go-reverse-flow/internal/metrics"
 	"github.com/dimastriann/go-reverse-flow/internal/proxy"
+	"github.com/dimastriann/go-reverse-flow/internal/ratelimit"
 )
 
 const (
@@ -67,11 +68,19 @@ func main() {
 		log.Fatalf("proxy: %v", err)
 	}
 	accessLog := logging.New(handler) // one structured line per request
+	chain := accessLog
+
+	// Optional per-client throttling sits inside the access log so 429s are
+	// still logged (order: accessLog -> rateLimiter -> proxy).
+	if rate, burst := cfg.RateLimit.Values(); rate > 0 {
+		chain = logging.New(ratelimit.New(handler, rate, burst))
+		log.Printf("ratelimit: %.2f req/s per client, burst %d", rate, burst)
+	}
 
 	// /metrics serves the counter/gauge exposition; everything else is proxied.
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", scrape.Handler())
-	mux.Handle("/", accessLog)
+	mux.Handle("/", chain)
 
 	// ReadHeaderTimeout guards slowloris-style connections; other timeouts
 	// stay at zero because proxied streams may legitimately be long-lived.
