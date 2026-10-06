@@ -51,6 +51,7 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 type Config struct {
 	ListenAddr string         `json:"listen_addr"`
 	Backends   []string       `json:"backends"`
+	Weights    []int          `json:"backend_weights,omitempty"` // optional, aligned with backends
 	Health     HealthSettings `json:"health,omitempty"`
 	RateLimit  RateSettings   `json:"rate_limiter,omitempty"`
 }
@@ -127,6 +128,14 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Backends) == 0 {
 		return fmt.Errorf("backends is empty: at least one backend URL is required")
+	}
+	if len(c.Weights) != 0 && len(c.Weights) != len(c.Backends) {
+		return fmt.Errorf("backend_weights has %d entries for %d backends: must match or be omitted", len(c.Weights), len(c.Backends))
+	}
+	for i, w := range c.Weights {
+		if w < 1 {
+			return fmt.Errorf("backend_weights[%d] = %d: must be >= 1", i, w)
+		}
 	}
 	for i, b := range c.Backends {
 		u, err := url.Parse(b)

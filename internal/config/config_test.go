@@ -170,6 +170,35 @@ func TestRateSettingsResolution(t *testing.T) {
 	}
 }
 
+// TestValidateWeights covers the weights alignment and range rules.
+func TestValidateWeights(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr bool
+	}{
+		{name: "absent weights, default RR", json: `{"listen_addr":":1","backends":["http://a:1","http://b:2"]}`},
+		{name: "aligned weights", json: `{"listen_addr":":1","backends":["http://a:1","http://b:2"],"backend_weights":[3,1]}`},
+		{name: "length mismatch", json: `{"listen_addr":":1","backends":["http://a:1","http://b:2"],"backend_weights":[3]}`, wantErr: true},
+		{name: "zero weight", json: `{"listen_addr":":1","backends":["http://a:1"],"backend_weights":[0]}`, wantErr: true},
+		{name: "negative weight", json: `{"listen_addr":":1","backends":["http://a:1","http://b:2"],"backend_weights":[2,-1]}`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Load(writeFixture(t, tt.json))
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Load error = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if err == nil && tt.name == "aligned weights" {
+				if len(cfg.Weights) != 2 || cfg.Weights[0] != 3 || cfg.Weights[1] != 1 {
+					t.Errorf("Weights = %v, want [3,1]", cfg.Weights)
+				}
+			}
+		})
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
