@@ -54,6 +54,20 @@ type Config struct {
 	Weights    []int          `json:"backend_weights,omitempty"` // optional, aligned with backends
 	Health     HealthSettings `json:"health,omitempty"`
 	RateLimit  RateSettings   `json:"rate_limiter,omitempty"`
+	Cache      CacheSettings  `json:"cache,omitempty"`
+}
+
+// CacheSettings enables the TTL response cache when ttl > 0.
+type CacheSettings struct {
+	TTL *Duration `json:"ttl,omitempty"`
+}
+
+// Value resolves the knob; absent or non-positive ttl disables caching.
+func (s CacheSettings) Value() time.Duration {
+	if s.TTL != nil && *s.TTL > 0 {
+		return time.Duration(*s.TTL)
+	}
+	return 0
 }
 
 // HealthSettings controls the periodic backend probe.

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
+	"github.com/dimastriann/go-reverse-flow/internal/cache"
 	"github.com/dimastriann/go-reverse-flow/internal/config"
 	"github.com/dimastriann/go-reverse-flow/internal/health"
 	"github.com/dimastriann/go-reverse-flow/internal/logging"
@@ -76,15 +77,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("proxy: %v", err)
 	}
-	accessLog := logging.New(handler) // one structured line per request
-	chain := accessLog
-
-	// Optional per-client throttling sits inside the access log so 429s are
-	// still logged (order: accessLog -> rateLimiter -> proxy).
+	// Compose the proxy chain innermost-first: cache sits under the rate
+	// limiter (throttled clients never reach the cache), and the access log
+	// outermost so 429s and cache hits/misses are all logged.
+	proxied := http.Handler(handler)
+	if ttl := cfg.Cache.Value(); ttl > 0 {
+		proxied = cache.New(proxied, ttl)
+		log.Printf("cache: %s ttl for cacheable GET/HEAD responses", ttl)
+	}
 	if rate, burst := cfg.RateLimit.Values(); rate > 0 {
-		chain = logging.New(ratelimit.New(handler, rate, burst))
+		proxied = ratelimit.New(proxied, rate, burst)
 		log.Printf("ratelimit: %.2f req/s per client, burst %d", rate, burst)
 	}
+	chain := logging.New(proxied)
+
 	if len(cfg.Weights) > 0 {
 		log.Printf("balancer: smooth weighted %v over %d backend(s)", cfg.Weights, len(backends))
 	}

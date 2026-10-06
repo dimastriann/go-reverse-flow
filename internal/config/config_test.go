@@ -199,6 +199,32 @@ func TestValidateWeights(t *testing.T) {
 	}
 }
 
+// TestCacheSettingsResolution pins the ttl knob semantics.
+func TestCacheSettingsResolution(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want time.Duration
+	}{
+		{name: "absent disables", json: `{"backends":["http://x:1"]}`},
+		{name: "zero disables", json: `{"backends":["http://x:1"],"cache":{"ttl":"0s"}}`},
+		{name: "string ttl", json: `{"backends":["http://x:1"],"cache":{"ttl":"45s"}}`, want: 45 * time.Second},
+		{name: "number ttl seconds", json: `{"backends":["http://x:1"],"cache":{"ttl":2}}`, want: 2 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Load(writeFixture(t, tt.json))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.Cache.Value(); got != tt.want {
+				t.Errorf("Cache.Value() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
