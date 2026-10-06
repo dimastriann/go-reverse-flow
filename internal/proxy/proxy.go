@@ -34,12 +34,13 @@ var (
 
 // Handler is an http.Handler that load-balances requests over backends.
 type Handler struct {
-	proxies []*httputil.ReverseProxy
-	urls    []string // parallel to proxies, for health lookups
-	index   map[string]int
-	bal     *balancer.Balancer
-	health  *health.Checker    // optional; nil means route blindly
-	metrics *metrics.Collector // optional; nil means no counting
+	proxies  []*httputil.ReverseProxy
+	urls     []string // parallel to proxies, for health lookups
+	index    map[string]int
+	bal      *balancer.Balancer
+	weighted *balancer.SmoothWeighted // optional; nil means plain round-robin
+	health   *health.Checker          // optional; nil means route blindly
+	metrics  *metrics.Collector       // optional; nil means no counting
 }
 
 // Option configures a Handler.
@@ -50,6 +51,14 @@ type Option func(*Handler)
 func WithHealth(c *health.Checker) Option {
 	return func(h *Handler) {
 		h.health = c
+	}
+}
+
+// WithWeighted enables smooth weighted round-robin (config backend_weights).
+// Plain round-robin remains as the fallback path for any pick error.
+func WithWeighted(sw *balancer.SmoothWeighted) Option {
+	return func(h *Handler) {
+		h.weighted = sw
 	}
 }
 
@@ -164,8 +173,7 @@ func (h *Handler) pickAlternate(failedURL string) int {
 	if len(alive) == 0 {
 		return -1
 	}
-	pos := h.bal.Next(len(alive))
-	return h.index[alive[pos]]
+	return h.choose(alive)
 }
 
 // ServeHTTP forwards the request to the next backend. With health routing
@@ -229,8 +237,20 @@ func (h *Handler) pick() (int, *pickStatus) {
 		if len(ups) == 0 {
 			return 0, &pickStatus{code: http.StatusServiceUnavailable, message: "no healthy backend available"}
 		}
-		pos := h.bal.Next(len(ups))
-		return h.index[ups[pos]], nil
+		return h.choose(ups), nil
 	}
 	return h.bal.Next(len(h.proxies)), nil
+}
+
+// choose selects among candidate URLs via the weighted picker when present,
+// falling back to plain round-robin (the weighted pick only fails on
+// programming errors).
+func (h *Handler) choose(candidates []string) int {
+	if h.weighted != nil {
+		if pos, err := h.weighted.Pick(candidates); err == nil {
+			return h.index[candidates[pos]]
+		}
+	}
+	pos := h.bal.Next(len(candidates))
+	return h.index[candidates[pos]]
 }

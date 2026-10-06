@@ -409,9 +409,47 @@ func TestRetryPostNotReplayed(t *testing.T) {
 	}
 }
 
-// TestRetryWhenHeadersAlreadySent does not replay partial responses: an
-// attempt that wrote headers then died is returned as-is (502 written by the
-// ErrorHandler because retries are forbidden after written==true).
+// TestWeightedDistributionThreeToOne drives 8 requests through a 3:1
+// weighted setup and asserts the exact smooth sequence golden interleave.
+func TestWeightedDistributionThreeToOne(t *testing.T) {
+	heavy, closeHeavy := newBackend(t, "heavy")
+	defer closeHeavy()
+	light, closeLight := newBackend(t, "light")
+	defer closeLight()
+
+	sw, err := balancer.NewSmoothWeighted(map[string]int{
+		heavy.String(): 3,
+		light.String(): 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSmoothWeighted: %v", err)
+	}
+
+	c := health.New([]string{heavy.String(), light.String()}, 500*time.Millisecond)
+	h, err := New([]*url.URL{heavy, light}, &balancer.Balancer{}, WithHealth(c), WithWeighted(sw))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var bodies []string
+	for i := 0; i < 8; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status %d", i, rec.Code)
+		}
+		bodies = append(bodies, rec.Body.String())
+	}
+
+	want := []string{"heavy", "heavy", "light", "heavy", "heavy", "heavy", "light", "heavy"}
+	if fmt.Sprint(bodies) != fmt.Sprint(want) {
+		t.Errorf("distribution = %v, want %v", bodies, want)
+	}
+}
+
+// TestRetrySkippedWhenNothingAlternateIsAlive covers the single-backend edge:
+// an attempt that dies with no alternate healthy backend surfaces as the
+// final honest 502 (no replay possible).
 func TestRetrySkippedWhenNothingAlternateIsAlive(t *testing.T) {
 	deadURL, _ := url.Parse("http://127.0.0.1:1")
 
@@ -429,6 +467,9 @@ func TestRetrySkippedWhenNothingAlternateIsAlive(t *testing.T) {
 		t.Errorf("status %d, want 502 for the only-backend death", rec.Code)
 	}
 }
+
+// TestConcurrentRequests forwards 200 requests from 20 goroutines and checks
+// all succeed and every backend is exercised.
 func TestConcurrentRequests(t *testing.T) {
 	const backends = 3
 	const goroutines = 20

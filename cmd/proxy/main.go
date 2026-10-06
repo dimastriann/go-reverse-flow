@@ -60,10 +60,19 @@ func main() {
 	}))
 
 	scrape := metrics.New(metrics.WithStatusSource(checker.Statuses))
-	handler, err := proxy.New(backends, &balancer.Balancer{},
-		proxy.WithHealth(checker),
-		proxy.WithMetrics(scrape),
-	)
+	proxyOpts := []proxy.Option{proxy.WithHealth(checker), proxy.WithMetrics(scrape)}
+	if len(cfg.Weights) > 0 {
+		weights := make(map[string]int, len(cfg.Backends))
+		for i, w := range cfg.Weights {
+			weights[backends[i].String()] = w
+		}
+		smooth, err := balancer.NewSmoothWeighted(weights)
+		if err != nil {
+			log.Fatalf("balancer: %v", err)
+		}
+		proxyOpts = append(proxyOpts, proxy.WithWeighted(smooth))
+	}
+	handler, err := proxy.New(backends, &balancer.Balancer{}, proxyOpts...)
 	if err != nil {
 		log.Fatalf("proxy: %v", err)
 	}
@@ -75,6 +84,9 @@ func main() {
 	if rate, burst := cfg.RateLimit.Values(); rate > 0 {
 		chain = logging.New(ratelimit.New(handler, rate, burst))
 		log.Printf("ratelimit: %.2f req/s per client, burst %d", rate, burst)
+	}
+	if len(cfg.Weights) > 0 {
+		log.Printf("balancer: smooth weighted %v over %d backend(s)", cfg.Weights, len(backends))
 	}
 
 	// /metrics serves the counter/gauge exposition; everything else is proxied.
