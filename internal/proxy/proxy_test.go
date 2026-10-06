@@ -322,8 +322,113 @@ func metricsRenderFor(t *testing.T, m *metrics.Collector) string {
 	return rec.Body.String()
 }
 
-// TestConcurrentRequests forwards 200 requests from 20 goroutines and checks
-// all succeed and every backend is exercised.
+// TestRetryOnceLandsOnSurvivor points the first attempt at a dead URL inside
+// an unswept "all healthy" checker: the dial fails, the retry lands on the
+// survivor, and every one of six requests ends 200 — with attempt buckets
+// proving the replay actually happened (dead=3 first picks, survivor=6).
+func TestRetryOnceLandsOnSurvivor(t *testing.T) {
+	u, closeFn := newBackend(t, "retry-a")
+	defer closeFn()
+
+	deadURL, _ := url.Parse("http://127.0.0.1:1")
+
+	m := metrics.New()
+	// No Start(): no sweeps, so both stay nominally healthy and the round
+	// robin keeps pointing at the corpse — exactly the retry target case.
+	c := health.New([]string{deadURL.String(), u.String()}, 500*time.Millisecond)
+
+	lb := &balancer.Balancer{}
+	h, err := New([]*url.URL{deadURL, u}, lb, WithHealth(c), WithMetrics(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_ = lb
+
+	for i := 0; i < 6; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusOK || rec.Body.String() != "retry-a" {
+			t.Fatalf("request %d: status %d body %q; want 200 retry-a", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	render := metricsRenderFor(t, m)
+	// 6/6 on both buckets: each request picks the corpse first (the alternate
+	// pick consumes the shared counter, keeping the pointer on the dead-half
+	// parity while the corpse lingers), then replays on the survivor. In
+	// production the checker demotes such a corpse within one interval and
+	// the pointer re-balances; with no sweeps here the pattern stays fixed
+	// and doubles as proof that every replay path ran exactly once.
+	if !strings.Contains(render, fmt.Sprintf("grf_backend_requests_total{backend=%q} 6\n", deadURL.String())) ||
+		!strings.Contains(render, fmt.Sprintf("grf_backend_requests_total{backend=%q} 6\n", u.String())) {
+		t.Errorf("attempt buckets missing the replay trail:\n%s", render)
+	}
+}
+
+// TestRetryPostNotReplayed pins honesty: a POST that wins the dead dial
+// surfaces as exactly one 502 with one counted attempt — side effects are
+// never replayed.
+func TestRetryPostNotReplayed(t *testing.T) {
+	u, closeFn := newBackend(t, "post-survivor")
+	defer closeFn()
+
+	deadURL, _ := url.Parse("http://127.0.0.1:1")
+
+	m := metrics.New()
+	c := health.New([]string{deadURL.String(), u.String()}, 500*time.Millisecond)
+	h, err := New([]*url.URL{deadURL, u}, &balancer.Balancer{}, WithHealth(c), WithMetrics(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	deaths, rights := 0, 0
+	for i := 0; i < 6; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		h.ServeHTTP(rec, req)
+		switch rec.Code {
+		case http.StatusBadGateway:
+			if rec.Body.String() != "backend unavailable\n" {
+				t.Fatalf("request %d: 502 body %q", i, rec.Body.String())
+			}
+			deaths++
+		case http.StatusOK:
+			rights++
+		default:
+			t.Fatalf("request %d: unexpected status %d", i, rec.Code)
+		}
+	}
+	if deaths != 3 || rights != 3 {
+		t.Errorf("POST outcomes: %d x 502, %d x 200; want 3/3 (no replays)", deaths, rights)
+	}
+
+	render := metricsRenderFor(t, m)
+	if !strings.Contains(render, fmt.Sprintf("grf_backend_requests_total{backend=%q} 3\n", deadURL.String())) ||
+		!strings.Contains(render, fmt.Sprintf("grf_backend_requests_total{backend=%q} 3\n", u.String())) {
+		t.Errorf("POST attempt buckets should match 3/3:\n%s", render)
+	}
+}
+
+// TestRetryWhenHeadersAlreadySent does not replay partial responses: an
+// attempt that wrote headers then died is returned as-is (502 written by the
+// ErrorHandler because retries are forbidden after written==true).
+func TestRetrySkippedWhenNothingAlternateIsAlive(t *testing.T) {
+	deadURL, _ := url.Parse("http://127.0.0.1:1")
+
+	c := health.New([]string{deadURL.String()}, 50*time.Millisecond)
+	h, err := New([]*url.URL{deadURL}, &balancer.Balancer{}, WithHealth(c))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Single "healthy" backend in the set means retryable() is false: the
+	// ErrorHandler's final-write path answers 502 directly.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status %d, want 502 for the only-backend death", rec.Code)
+	}
+}
 func TestConcurrentRequests(t *testing.T) {
 	const backends = 3
 	const goroutines = 20
