@@ -20,6 +20,9 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 | ✅ v0.3.0 | 📊 `/metrics` endpoint (per-backend counters + healthy gauges, Prometheus-scrapeable) |
 | ✅ v0.3.0 | 🐳 Docker support (multi-stage `scratch` image + 3-backend `docker compose up` demo) |
 | ✅ v0.3.0 | ⏳ Rate limiting (per-client token bucket, `429` + `Retry-After`) |
+| ✅ v0.4.0 | 🔁 Retry-once on dead backend (idempotent requests only, never replays side effects) |
+| ✅ v0.4.0 | ⚖️ Smooth weighted round-robin (`backend_weights`, nginx-style interleave) |
+| ✅ v0.4.0 | 🗄️ TTL response cache (`X-Cache: hit/miss`, conservative eligibility) |
 
 ## 🏗️ Architecture
 
@@ -55,12 +58,14 @@ Observability and defense come on the same listener:
 ├── cmd/proxy/          # Application entry point
 ├── internal/
 │   ├── config/         # JSON config loader, validation, duration parsing
-│   ├── balancer/       # Lock-free round-robin picker (atomic counter)
-│   ├── proxy/          # httputil.ReverseProxy wiring + health-aware routing
+│   ├── balancer/       # Lock-free round-robin + smooth weighted picker
+│   ├── proxy/          # httputil.ReverseProxy wiring, health-aware routing,
+│   │                   #   retry-once for idempotent requests
 │   ├── health/         # Periodic probing, transitions, transition hooks
 │   ├── logging/        # Access-log middleware (backend attribution via ctx)
 │   ├── metrics/        # Prometheus-style counters + gauges, /metrics
-│   └── ratelimit/      # Per-client token bucket, 429 + Retry-After
+│   ├── ratelimit/      # Per-client token bucket, 429 + Retry-After
+│   └── cache/          # TTL response cache with X-Cache observability
 ├── config/             # Configuration files (JSON, incl. docker demo)
 ├── Dockerfile          # Multi-stage build on a scratch runtime image
 ├── docker-compose.yml  # One-command 3-backend demo stack
@@ -98,6 +103,7 @@ Config lives in `config/config.json`:
         "http://localhost:8001",
         "http://localhost:8002"
     ],
+    "backend_weights": [3, 1],
     "health": {
         "interval": "5s",
         "timeout": "1s"
@@ -105,12 +111,26 @@ Config lives in `config/config.json`:
     "rate_limiter": {
         "rate": 0,
         "burst": 0
+    },
+    "cache": {
+        "ttl": "0s"
     }
 }
 ```
 
-`rate_limiter` is disabled when `rate` is 0; a positive `rate` (tokens per
-second, with an optional `burst` ceiling) throttles clients with `429`s.
+Knob semantics:
+
+- `backend_weights` — optional, aligned with `backends`; omitted means plain
+  round-robin, `[3, 1]` gives the heavy node three picks out of four,
+  interleaved smoothly (`a,a,b,a`, no bursts)
+- `rate_limiter` — disabled when `rate` is 0; a positive `rate` (tokens per
+  second, with an optional `burst` ceiling) throttles clients with `429`s
+- `cache` — disabled when `ttl` is 0; a positive TTL caches successful
+  idempotent responses (≤1 MiB) and stamps every proxied response with
+  `X-Cache: hit` or `miss`
+
+The composed request path is `access log → rate limiter → cache → proxy`,
+with `/metrics` and the health checker outside the chain.
 
 ### 4. Test
 
@@ -134,16 +154,18 @@ service-name DNS resolving the baked backend URLs automatically.
 
 ## 🗺️ Roadmap
 
-`v0.1.0` reverse proxy + round-robin → `v0.2.0` health checks + access logging → `v0.3.0` metrics + Docker + rate limiting → next: caching layer, weight or least-connections balancing, retry-once-on-dead-backend.
+`v0.1.0` reverse proxy + round-robin → `v0.2.0` health checks + access logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → next: least-connections, cache invalidation endpoint, YAML/env config.
 
 ## 📚 What I'm Learning
 
 - How HTTP reverse proxies work under the hood
-- Load balancing strategies
+- Load balancing strategies (round-robin, smooth weighted, health-aware)
 - Go concurrency (goroutines, atomic ops, mutexes, graceful shutdown)
 - Health-check design (probing, state transitions, hot-path reads)
 - Observability plumbing (structured logs vs scrapeable exposition)
 - Throttling patterns (token buckets, deterministic clock injection)
+- HTTP caching rules (what is safe to store, and why most things are not)
+- Safe retries (pre-headers guard, idempotency, never replaying side effects)
 - Packaging: Docker multi-stage builds, compose topologies, tag-driven releases
 
 ## 📄 License
