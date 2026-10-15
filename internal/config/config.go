@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -52,9 +53,39 @@ type Config struct {
 	ListenAddr string         `json:"listen_addr"`
 	Backends   []string       `json:"backends"`
 	Weights    []int          `json:"backend_weights,omitempty"` // optional, aligned with backends
+	Routes     []Route        `json:"routes,omitempty"`          // optional path-prefix routing
 	Health     HealthSettings `json:"health,omitempty"`
 	RateLimit  RateSettings   `json:"rate_limiter,omitempty"`
 	Cache      CacheSettings  `json:"cache,omitempty"`
+}
+
+// Route sends requests whose path starts with Prefix to its own backend
+// pool instead of the default one. The path is forwarded as-is.
+type Route struct {
+	Prefix   string   `json:"prefix"`
+	Backends []string `json:"backends"`
+}
+
+// AllBackends returns the union of default and route backends in first-seen
+// order (for the shared health checker).
+func (c *Config) AllBackends() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(c.Backends))
+	for _, u := range c.Backends {
+		if !seen[u] {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	for _, r := range c.Routes {
+		for _, u := range r.Backends {
+			if !seen[u] {
+				seen[u] = true
+				out = append(out, u)
+			}
+		}
+	}
+	return out
 }
 
 // CacheSettings enables the TTL response cache when ttl > 0.
@@ -161,6 +192,32 @@ func (c *Config) Validate() error {
 		}
 		if u.Host == "" {
 			return fmt.Errorf("backends[%d] %q: missing host", i, b)
+		}
+	}
+
+	prefixes := map[string]bool{}
+	for i, r := range c.Routes {
+		if !strings.HasPrefix(r.Prefix, "/") {
+			return fmt.Errorf("routes[%d] %q: prefix must start with /", i, r.Prefix)
+		}
+		if prefixes[r.Prefix] {
+			return fmt.Errorf("routes[%d] %q: duplicate prefix", i, r.Prefix)
+		}
+		prefixes[r.Prefix] = true
+		if len(r.Backends) == 0 {
+			return fmt.Errorf("routes[%d] %q: backends is empty", i, r.Prefix)
+		}
+		for j, b := range r.Backends {
+			u, err := url.Parse(b)
+			if err != nil {
+				return fmt.Errorf("routes[%d] %q backends[%d] %q: %w", i, r.Prefix, j, b, err)
+			}
+			if u.Scheme != "http" && u.Scheme != "https" {
+				return fmt.Errorf("routes[%d] %q backends[%d] %q: scheme must be http or https", i, r.Prefix, j, b)
+			}
+			if u.Host == "" {
+				return fmt.Errorf("routes[%d] %q backends[%d] %q: missing host", i, r.Prefix, j, b)
+			}
 		}
 	}
 	return nil

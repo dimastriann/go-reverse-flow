@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -222,6 +223,74 @@ func TestCacheSettingsResolution(t *testing.T) {
 				t.Errorf("Cache.Value() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestValidateRoutes covers the route table rules and AllBackends union.
+func TestValidateRoutes(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr bool
+	}{
+		{
+			name: "absent routes, default only",
+			json: `{"listen_addr":":1","backends":["http://a:1"]}`,
+		},
+		{
+			name: "valid route",
+			json: `{"listen_addr":":1","backends":["http://a:1"],"routes":[{"prefix":"/api","backends":["http://b:2"]}]}`,
+		},
+		{
+			name:    "prefix without slash",
+			json:    `{"listen_addr":":1","backends":["http://a:1"],"routes":[{"prefix":"api","backends":["http://b:2"]}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "duplicate prefix",
+			json:    `{"listen_addr":":1","backends":["http://a:1"],"routes":[{"prefix":"/api","backends":["http://b:2"]},{"prefix":"/api","backends":["http://c:3"]}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty route backends",
+			json:    `{"listen_addr":":1","backends":["http://a:1"],"routes":[{"prefix":"/api","backends":[]}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "bad scheme in route backend",
+			json:    `{"listen_addr":":1","backends":["http://a:1"],"routes":[{"prefix":"/api","backends":["ftp://b:2"]}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "bad scheme in default backend",
+			json:    `{"listen_addr":":1","backends":["ftp://a:1"],"routes":[{"prefix":"/api","backends":["http://b:2"]}]}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Load(writeFixture(t, tt.json)); (err != nil) != tt.wantErr {
+				t.Errorf("Load error = %v, wantErr = %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestAllBackendsUnion checks the health-check URL list includes route
+// backends once each, in first-seen order.
+func TestAllBackendsUnion(t *testing.T) {
+	cfg, err := Load(writeFixture(t, `{
+		"listen_addr":":1",
+		"backends":["http://a:1","http://b:2"],
+		"routes":[{"prefix":"/api","backends":["http://b:2","http://c:3"]}]
+	}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"http://a:1", "http://b:2", "http://c:3"}
+	if got := cfg.AllBackends(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("AllBackends() = %v, want %v", got, want)
 	}
 }
 
