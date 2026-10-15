@@ -23,6 +23,7 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 | ✅ v0.4.0 | 🔁 Retry-once on dead backend (idempotent requests only, never replays side effects) |
 | ✅ v0.4.0 | ⚖️ Smooth weighted round-robin (`backend_weights`, nginx-style interleave) |
 | ✅ v0.4.0 | 🗄️ TTL response cache (`X-Cache: hit/miss`, conservative eligibility) |
+| ✅ v0.5.0 | 🛤️ Path-prefix routing (`routes`, longest-prefix, per-pool health/weights/retries) |
 
 ## 🏗️ Architecture
 
@@ -61,6 +62,7 @@ Observability and defense come on the same listener:
 │   ├── balancer/       # Lock-free round-robin + smooth weighted picker
 │   ├── proxy/          # httputil.ReverseProxy wiring, health-aware routing,
 │   │                   #   retry-once for idempotent requests
+│   ├── router/         # Longest-prefix path dispatch across pools
 │   ├── health/         # Periodic probing, transitions, transition hooks
 │   ├── logging/        # Access-log middleware (backend attribution via ctx)
 │   ├── metrics/        # Prometheus-style counters + gauges, /metrics
@@ -100,8 +102,14 @@ Config lives in `config/config.json`:
 {
     "listen_addr": ":8080",
     "backends": [
-        "http://localhost:8001",
-        "http://localhost:8002"
+        "http://localhost:3000",
+        "http://localhost:4000"
+    ],
+    "routes": [
+        {
+            "prefix": "/api",
+            "backends": ["http://localhost:5000"]
+        }
     ],
     "backend_weights": [3, 1],
     "health": {
@@ -120,17 +128,24 @@ Config lives in `config/config.json`:
 
 Knob semantics:
 
+- `routes` — optional path-prefix routing: requests whose path starts with a
+  route prefix go to that pool (longest prefix wins, path forwarded as-is),
+  everything else uses the default `backends` pool. Each pool is
+  health-aware, weighted, and retry-capable independently; a dead route pool
+  answers `503` without touching other pools. Omit `routes` entirely to keep
+  the simple single-pool behavior
 - `backend_weights` — optional, aligned with `backends`; omitted means plain
   round-robin, `[3, 1]` gives the heavy node three picks out of four,
-  interleaved smoothly (`a,a,b,a`, no bursts)
+  interleaved smoothly (`a,a,b,a`, no bursts). Route-pool backends that have
+  no configured weight join at weight 1
 - `rate_limiter` — disabled when `rate` is 0; a positive `rate` (tokens per
   second, with an optional `burst` ceiling) throttles clients with `429`s
 - `cache` — disabled when `ttl` is 0; a positive TTL caches successful
   idempotent responses (≤1 MiB) and stamps every proxied response with
   `X-Cache: hit` or `miss`
 
-The composed request path is `access log → rate limiter → cache → proxy`,
-with `/metrics` and the health checker outside the chain.
+The composed request path is `access log → rate limiter → cache → router →
+per-pool proxy`, with `/metrics` and the health checker outside the chain.
 
 ### 4. Test
 
@@ -154,13 +169,14 @@ service-name DNS resolving the baked backend URLs automatically.
 
 ## 🗺️ Roadmap
 
-`v0.1.0` reverse proxy + round-robin → `v0.2.0` health checks + access logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → next: least-connections, cache invalidation endpoint, YAML/env config.
+`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → next: least-connections, cache invalidation endpoint, YAML/env config.
 
 ## 📚 What I'm Learning
 
 - How HTTP reverse proxies work under the hood
 - Load balancing strategies (round-robin, smooth weighted, health-aware)
 - Go concurrency (goroutines, atomic ops, mutexes, graceful shutdown)
+- Path routing (longest-prefix dispatch, pool-scoped state, shared checkers)
 - Health-check design (probing, state transitions, hot-path reads)
 - Observability plumbing (structured logs vs scrapeable exposition)
 - Throttling patterns (token buckets, deterministic clock injection)
