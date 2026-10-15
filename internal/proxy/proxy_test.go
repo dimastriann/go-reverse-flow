@@ -409,6 +409,43 @@ func TestRetryPostNotReplayed(t *testing.T) {
 	}
 }
 
+// TestForeignBackendsStayOutOfPool pins pool-scoped health: with a shared
+// checker reporting a foreign backend healthy, this handler's routing stays
+// inside its own pool — no requests, retries, or metric counts leak out.
+func TestForeignBackendsStayOutOfPool(t *testing.T) {
+	aliveA, closeAliveA := newBackend(t, "pool-a-alive")
+	defer closeAliveA()
+	foreignB, closeForeignB := newBackend(t, "foreign-b")
+	defer closeForeignB()
+
+	deadURL, _ := url.Parse("http://127.0.0.1:1")
+
+	m := metrics.New()
+	// Unswept checker: dead + alive-A + foreign-B all report healthy forever.
+	c := health.New([]string{deadURL.String(), aliveA.String(), foreignB.String()}, 500*time.Millisecond)
+
+	h, err := New([]*url.URL{deadURL, aliveA}, &balancer.Balancer{}, WithHealth(c), WithMetrics(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for i := 0; i < 6; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if rec.Code != http.StatusOK || rec.Body.String() != "pool-a-alive" {
+			t.Fatalf("request %d: status %d body %q; want pool survivor only", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	render := metricsRenderFor(t, m)
+	if strings.Contains(render, foreignB.String()) {
+		t.Errorf("foreign backend leaked into routing/metrics:\n%s", render)
+	}
+	if !strings.Contains(render, fmt.Sprintf("grf_backend_requests_total{backend=%q} 6\n", aliveA.String())) {
+		t.Errorf("pool survivor attempts missing:\n%s", render)
+	}
+}
+
 // TestWeightedDistributionThreeToOne drives 8 requests through a 3:1
 // weighted setup and asserts the exact smooth sequence golden interleave.
 func TestWeightedDistributionThreeToOne(t *testing.T) {

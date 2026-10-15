@@ -152,20 +152,22 @@ func (w *writeTracker) Write(b []byte) (int, error) {
 }
 
 // retryable reports whether the request may legally replay on a different
-// backend: only safe methods, and only with an alternate healthy target.
+// backend: only safe methods, and only with an alternate healthy backend in
+// this handler's own pool.
 func (h *Handler) retryable(r *http.Request) bool {
 	if h.health == nil || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 		return false
 	}
-	return len(h.health.HealthyOf()) > 1
+	return len(h.healthyInPool()) > 1
 }
 
-// pickAlternate chooses the next backend among healthy backends that are not
-// the just-failed URL; returns -1 when nothing else is available.
+// pickAlternate chooses the next backend among healthy backends of this
+// handler's pool that are not the just-failed URL; returns -1 when nothing
+// else is available.
 func (h *Handler) pickAlternate(failedURL string) int {
-	ups := h.health.HealthyOf()
-	alive := make([]string, 0, len(ups))
-	for _, u := range ups {
+	pool := h.healthyInPool()
+	alive := make([]string, 0, len(pool))
+	for _, u := range pool {
 		if u != failedURL {
 			alive = append(alive, u)
 		}
@@ -230,14 +232,32 @@ type pickStatus struct {
 	message string
 }
 
+// healthyInPool intersects the checker's global healthy set with the
+// backends this handler actually owns, so a shared Checker across several
+// route pools never leaks foreign backends into a pool's round-robin. The
+// result keeps HealthyOf's sorted order (a stable subsequence).
+func (h *Handler) healthyInPool() []string {
+	if h.health == nil {
+		return nil
+	}
+	ups := h.health.HealthyOf()
+	pool := make([]string, 0, len(ups))
+	for _, u := range ups {
+		if _, mine := h.index[u]; mine {
+			pool = append(pool, u)
+		}
+	}
+	return pool
+}
+
 // pick chooses the next backend index and reports failure modes.
 func (h *Handler) pick() (int, *pickStatus) {
 	if h.health != nil {
-		ups := h.health.HealthyOf()
-		if len(ups) == 0 {
+		pool := h.healthyInPool()
+		if len(pool) == 0 {
 			return 0, &pickStatus{code: http.StatusServiceUnavailable, message: "no healthy backend available"}
 		}
-		return h.choose(ups), nil
+		return h.choose(pool), nil
 	}
 	return h.bal.Next(len(h.proxies)), nil
 }
