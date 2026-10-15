@@ -23,6 +23,7 @@ import (
 	"github.com/dimastriann/go-reverse-flow/internal/metrics"
 	"github.com/dimastriann/go-reverse-flow/internal/proxy"
 	"github.com/dimastriann/go-reverse-flow/internal/ratelimit"
+	"github.com/dimastriann/go-reverse-flow/internal/router"
 )
 
 const (
@@ -42,17 +43,18 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	backends := make([]*url.URL, len(cfg.Backends))
-	for i, raw := range cfg.Backends {
+	allBackends := cfg.AllBackends()
+	parsed := make(map[string]*url.URL, len(allBackends))
+	for _, raw := range allBackends {
 		u, err := url.Parse(raw)
 		if err != nil {
-			log.Fatalf("config: backends[%d]: %v", i, err)
+			log.Fatalf("config: backend %s: %v", raw, err)
 		}
-		backends[i] = u
+		parsed[raw] = u
 	}
 
 	interval, probeTimeout := cfg.Health.Values()
-	checker := health.New(cfg.Backends, probeTimeout, health.WithTransitionHook(func(backend string, up bool) {
+	checker := health.New(allBackends, probeTimeout, health.WithTransitionHook(func(backend string, up bool) {
 		if up {
 			log.Printf("health: backend %s is UP", backend)
 			return
@@ -65,7 +67,7 @@ func main() {
 	if len(cfg.Weights) > 0 {
 		weights := make(map[string]int, len(cfg.Backends))
 		for i, w := range cfg.Weights {
-			weights[backends[i].String()] = w
+			weights[cfg.Backends[i]] = w
 		}
 		smooth, err := balancer.NewSmoothWeighted(weights)
 		if err != nil {
@@ -73,14 +75,36 @@ func main() {
 		}
 		proxyOpts = append(proxyOpts, proxy.WithWeighted(smooth))
 	}
-	handler, err := proxy.New(backends, &balancer.Balancer{}, proxyOpts...)
-	if err != nil {
-		log.Fatalf("proxy: %v", err)
+
+	// One proxy handler per pool: the default pool plus one per route. They
+	// share the checker, metrics, and weighted picker, but keep independent
+	// round-robin pointers so pool traffic never disturbs pool parity.
+	buildPool := func(rawURLs []string, label string) *proxy.Handler {
+		pool := make([]*url.URL, len(rawURLs))
+		for i, raw := range rawURLs {
+			pool[i] = parsed[raw]
+		}
+		h, err := proxy.New(pool, &balancer.Balancer{}, proxyOpts...)
+		if err != nil {
+			log.Fatalf("proxy: %s pool: %v", label, err)
+		}
+		return h
+	}
+
+	defaultPool := buildPool(cfg.Backends, "default")
+	var routed http.Handler = defaultPool
+	if len(cfg.Routes) > 0 {
+		pools := make(map[string]http.Handler, len(cfg.Routes))
+		for _, r := range cfg.Routes {
+			pools[r.Prefix] = buildPool(r.Backends, r.Prefix)
+			log.Printf("router: %s -> %d backend(s)", r.Prefix, len(r.Backends))
+		}
+		routed = router.New(defaultPool, pools)
 	}
 	// Compose the proxy chain innermost-first: cache sits under the rate
 	// limiter (throttled clients never reach the cache), and the access log
 	// outermost so 429s and cache hits/misses are all logged.
-	proxied := http.Handler(handler)
+	proxied := http.Handler(routed)
 	if ttl := cfg.Cache.Value(); ttl > 0 {
 		proxied = cache.New(proxied, ttl)
 		log.Printf("cache: %s ttl for cacheable GET/HEAD responses", ttl)
@@ -92,7 +116,7 @@ func main() {
 	chain := logging.New(proxied)
 
 	if len(cfg.Weights) > 0 {
-		log.Printf("balancer: smooth weighted %v over %d backend(s)", cfg.Weights, len(backends))
+		log.Printf("balancer: smooth weighted %v over %d backend(s)", cfg.Weights, len(cfg.Backends))
 	}
 
 	// /metrics serves the counter/gauge exposition; everything else is proxied.
@@ -116,8 +140,8 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("proxy: listening on %s over %d backend(s)", cfg.ListenAddr, len(backends))
-		for i, u := range backends {
+		log.Printf("proxy: listening on %s over %d backend(s)", cfg.ListenAddr, len(allBackends))
+		for i, u := range allBackends {
 			log.Printf("proxy: backends[%d] = %s", i, u)
 		}
 		log.Printf("health: probing every %s (timeout %s)", interval, probeTimeout)
