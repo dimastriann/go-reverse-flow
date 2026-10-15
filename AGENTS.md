@@ -21,10 +21,32 @@ Run and pass all of the following before `git commit`:
 
 1. `gofmt -l .` — must print nothing (fix formatting first)
 2. `go vet ./...`
-3. `go test ./...`
+3. `go test -race -count=1 ./...` — matches the CI configuration
 4. `go build ./...`
 
 A commit that fails any of these on a clean checkout should not exist.
+
+## Code standards
+
+Rules that keep the codebase small, safe, and reviewable — each one is
+verifiable, so treat a violation as a bug:
+
+- **Stdlib only.** No third-party imports in any phase unless the maintainer
+  explicitly opens the door; `go.mod` must stay dependency-free.
+- **Idiomatic edge-first Go.** Constructors return errors; programming errors
+  panic (documented at the call site); errors wrap with `%w` and a contextual
+  prefix, checked with `errors.Is`.
+- **No package-global mutable state.** Per-request state travels in the
+  request context under empty-struct key types; per-process state lives on
+  structs (`atomic.Uint64`, `sync.RWMutex` map guards) owned by the type.
+- **Configurable components take functional options** (`WithXxx`), and
+  behavior that depends on time depends on an injected clock — tests never
+  sleep.
+- **Safe by construction.** Concurrency changes must pass `go test -race`,
+  never replay responses after headers are written, and keep goroutine
+  lifecycles bounded by a context.
+- **One responsibility per package file**, with a package doc comment that
+  explains the design tradeoff, not just the mechanics.
 
 ## Atomic commits
 
@@ -40,3 +62,6 @@ A commit that fails any of these on a clean checkout should not exist.
 - `roadmap.local.md` is a local planning file and must never be committed
   (kept out via `.gitignore`).
 - Milestones are tagged (`v0.1.0`, `v0.2.0`, ...) after verified working states.
+- Agents using Codex or other tools: the project skill lives at
+  `.opencode/skills/go-reverse-flow/SKILL.md` (Claude Code gets a pointer
+  stub under `.claude/skills/`). Consult it before working on any package.
