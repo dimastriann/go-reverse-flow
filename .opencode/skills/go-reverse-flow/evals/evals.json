@@ -1,20 +1,43 @@
-{
-  "skill_name": "go-reverse-flow",
-  "evals": [
-    {
-      "id": 0,
-      "prompt": "We're missing an ops-friendly liveness probe on the proxy itself. Add a /healthz endpoint to go-reverse-flow: it should return 200 with a tiny JSON body when at least one backend in the pool is healthy, and 503 when none are. Wire it on the mux in cmd/proxy, keep it out of the proxied chain, cover it with tests, and make sure the usual gates pass.",
-      "expected_output": "A healthz endpoint wired in cmd/proxy/main.go using health.Checker state (not a new mechanism), tests alongside the change in the right package, stdlib-only code in repo idioms, gate commands run, and no unrelated files touched."
-    },
-    {
-      "id": 1,
-      "prompt": "Before I trust SmoothWeighted in prod: review internal/balancer/smooth.go for concurrency safety under heavy request load plus health demotions shrinking the candidate list at the same time. Hunt for data races and fairness bugs. If you find a real bug, fix it with a regression test; otherwise report findings and don't touch the code.",
-      "expected_output": "A review report grounded in the actual file: mutex-guarded URL-keyed state, weight-1 default for unknown candidates after demotions, Pick's map+current bookkeeping all covered by the single mutex, plus reference to the existing race tests. Either a justified no-bug report or a minimal fix with test. No speculative refactors."
-    },
-    {
-      "id": 2,
-      "prompt": "Do a security pass over internal/cache (the TTL response cache middleware). I care about: cache poisoning, responses leaking between clients, and memory-exhaustion vectors. List findings with severity; only write code if you find an actual exploitable bug, and otherwise leave the carefully chosen behavior alone.",
-      "expected_output": "Findings report referencing the real eligibility rules: Set-Cookie exclusion, no-store handling, Accept-Encoding bypass of the single-key scheme, 1 MiB + Content-Length match bound, X-Cache-Bypass escape hatch, RWMutex-guarded items map. Exploitability framed honestly against the buffered-serve path. No drive-by behavior changes."
-    }
-  ]
+﻿{
+    "skill_name":  "go-reverse-flow",
+    "evals":  [
+                  {
+                      "id":  0,
+                      "prompt":  "We\u0027re missing an ops-friendly liveness probe on the proxy itself. Add a /healthz endpoint to go-reverse-flow: it should return 200 with a tiny JSON body when at least one backend in the pool is healthy, and 503 when none are. Wire it on the mux in cmd/proxy, keep it out of the proxied chain, cover it with tests, and make sure the usual gates pass.",
+                      "expected_output":  "A healthz endpoint wired in cmd/proxy/main.go using health.Checker state (not a new mechanism), tests alongside the change in the right package, stdlib-only code in repo idioms, gate commands run, and no unrelated files touched.",
+                      "expectations":  [
+                                           "GET /healthz returns 200 with a JSON body when at least one backend is healthy and 503 when none are",
+                                           "The endpoint is mounted on the mux in cmd/proxy/main.go, outside the proxied middleware chain",
+                                           "The endpoint reuses the existing health checker state - no new probing mechanism",
+                                           "Ships new tests covering the verdict contract",
+                                           "Ran the verification gate (vet/test/build) and reported results honestly, including the -race/cgo limitation",
+                                           "Lands as a single atomic Conventional Commit containing only the endpoint slice"
+                                       ]
+                  },
+                  {
+                      "id":  1,
+                      "prompt":  "Before I trust SmoothWeighted in prod: review internal/balancer/smooth.go for concurrency safety under heavy request load plus health demotions shrinking the candidate list at the same time. Hunt for data races and fairness bugs. If you find a real bug, fix it with a regression test; otherwise report findings and don\u0027t touch the code.",
+                      "expected_output":  "A review report grounded in the actual file: mutex-guarded URL-keyed state, weight-1 default for unknown candidates after demotions, Pick\u0027s map+current bookkeeping all covered by the single mutex, plus reference to the existing race tests. Either a justified no-bug report or a minimal fix with test. No speculative refactors.",
+                      "expectations":  [
+                                           "Reports a race-safety verdict for smooth.go with file:line evidence of lock coverage",
+                                           "Analyzes fairness under demotions (frozen currents / conservation invariant)",
+                                           "Backs the analysis with empirical or closed-form verification, not bare assertion",
+                                           "Runs vet/test/build and handles the missing -race constraint honestly",
+                                           "Makes no code changes given no real bug was found (respects the review-only bar)"
+                                       ]
+                  },
+                  {
+                      "id":  2,
+                      "prompt":  "Do a security pass over internal/cache (the TTL response cache middleware). I care about: cache poisoning, responses leaking between clients, and memory-exhaustion vectors. List findings with severity; only write code if you find an actual exploitable bug, and otherwise leave the carefully chosen behavior alone.",
+                      "expected_output":  "Findings report referencing the real eligibility rules: Set-Cookie exclusion, no-store handling, Accept-Encoding bypass of the single-key scheme, 1 MiB + Content-Length match bound, X-Cache-Bypass escape hatch, RWMutex-guarded items map. Exploitability framed honestly against the buffered-serve path. No drive-by behavior changes.",
+                      "expectations":  [
+                                           "Identifies Range/206 partial-content storage under the shared key as a cache-poisoning vector",
+                                           "Identifies the Authorization/Cookie keying gap enabling cross-client response leaks",
+                                           "Distinguishes documented accepted limitations from actual exploitable bugs",
+                                           "Fixes actual exploitable bugs with regression tests in atomic fix commits (task bar: code only for real exploitable bugs)",
+                                           "Runs the verification gate and reports results honestly",
+                                           "Follows reproduce-then-fix discipline (PoC or test-first evidence) when fixing vulnerabilities"
+                                       ]
+                  }
+              ]
 }
