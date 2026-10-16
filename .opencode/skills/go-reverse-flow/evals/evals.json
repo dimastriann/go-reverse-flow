@@ -38,6 +38,22 @@
                                            "Runs the verification gate and reports results honestly",
                                            "Follows reproduce-then-fix discipline (PoC or test-first evidence) when fixing vulnerabilities"
                                        ]
+                  },
+                  {
+                      "id":  3,
+                      "prompt":  "Ops keeps restarting the demo containers pointing at the same config file but different ports. Make the listen address overridable with a LISTEN_ADDR environment variable that takes precedence over the config file\u0027s listen_addr when set, and falls back cleanly otherwise. Keep it small, tested, and gated.",
+                      "expected_output":  "Small override landing in the right place (config stage vs cmd wiring) with a documented precedence rule, test coverage for the precedence, one atomic commit with tests, no unrelated changes, gates run.",
+                      "files":  [
+
+                                ],
+                      "expectations":  [
+                                           "LISTEN_ADDR, when set, overrides the config file listen_addr; when unset the config file value wins",
+                                           "Precedence behavior is covered by a test",
+                                           "The override lives in exactly one place (config load or cmd wiring), not duplicated in both",
+                                           "No third-party dependencies introduced",
+                                           "Lands as a single atomic Conventional Commit containing code + tests",
+                                           "Ran the verification gate (vet/test/build) and reported results honestly, including the -race/cgo limitation"
+                                       ]
                   }
               ]
 }
