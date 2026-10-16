@@ -447,7 +447,14 @@ func TestForeignBackendsStayOutOfPool(t *testing.T) {
 }
 
 // TestWeightedDistributionThreeToOne drives 8 requests through a 3:1
-// weighted setup and asserts the exact smooth sequence golden interleave.
+// weighted setup and asserts the 3:1 interleave ratio over the smooth
+// cycle. The exact phase of the interleave depends on candidate order —
+// healthyInPool presents backends sorted by URL string, and httptest URLs
+// embed ephemeral ports, so which backend sorts first (and wins the pick-2
+// current tie) varies per run; counting keeps the assertion port-order
+// independent. The exact cycle shape is pinned order- deterministically by
+// the balancer package's own smooth tests, which feed controlled candidate
+// slices.
 func TestWeightedDistributionThreeToOne(t *testing.T) {
 	heavy, closeHeavy := newBackend(t, "heavy")
 	defer closeHeavy()
@@ -478,9 +485,21 @@ func TestWeightedDistributionThreeToOne(t *testing.T) {
 		bodies = append(bodies, rec.Body.String())
 	}
 
-	want := []string{"heavy", "heavy", "light", "heavy", "heavy", "heavy", "light", "heavy"}
-	if fmt.Sprint(bodies) != fmt.Sprint(want) {
-		t.Errorf("distribution = %v, want %v", bodies, want)
+	var heavyHits, lightHits int
+	for _, body := range bodies {
+		switch body {
+		case "heavy":
+			heavyHits++
+		case "light":
+			lightHits++
+		default:
+			t.Errorf("unexpected body %q in distribution %v", body, bodies)
+		}
+	}
+	// The smooth algorithm interleaves 3:1 without bursts, and the full
+	// cycle maps 8 picks to a 6:2 split from either phase of the cycle.
+	if heavyHits != 6 || lightHits != 2 {
+		t.Errorf("distribution = %v, want split 6 heavy / 2 light (got %d/%d)", bodies, heavyHits, lightHits)
 	}
 }
 
