@@ -123,6 +123,39 @@ func TestSmoothConcurrency(t *testing.T) {
 	}
 }
 
+// TestSmoothArgmaxAfterDemotions pins argmax selection when health churn
+// shrinks the candidate list between picks: several demotion cycles can
+// leave every survivor's current weight at or below zero, where selection
+// must still take the argmax of the post-bump currents instead of latching
+// onto the first candidate.
+func TestSmoothArgmaxAfterDemotions(t *testing.T) {
+	sw, err := NewSmoothWeighted(map[string]int{
+		"http://a:x": 1, "http://b:y": 1, "http://c:z": 1, "http://d:w": 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSmoothWeighted: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		candidates []string
+		want       string
+	}{
+		{name: "full minus a", candidates: []string{"http://b:y", "http://c:z", "http://d:w"}, want: "http://b:y"},
+		{name: "b demoted", candidates: []string{"http://a:x", "http://c:z", "http://d:w"}, want: "http://c:z"},
+		{name: "a and d demoted", candidates: []string{"http://b:y", "http://c:z"}, want: "http://c:z"},
+	}
+	for _, tt := range tests {
+		idx, err := sw.Pick(tt.candidates)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if got := tt.candidates[idx]; got != tt.want {
+			t.Errorf("%s: chose %q, want argmax %q", tt.name, got, tt.want)
+		}
+	}
+}
+
 // TestSmoothPickEmpty errors instead of pattern weirdness.
 func TestSmoothPickEmpty(t *testing.T) {
 	sw, err := NewSmoothWeighted(map[string]int{"http://a:x": 1})

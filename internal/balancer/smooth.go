@@ -51,7 +51,8 @@ func (s *SmoothWeighted) Pick(candidates []string) (int, error) {
 	defer s.mu.Unlock()
 
 	total := 0
-	var bestIdx, bestWeight int
+	bestIdx := -1
+	var bestWeight int
 	for i, url := range candidates {
 		c, ok := s.state[url]
 		if !ok {
@@ -60,7 +61,7 @@ func (s *SmoothWeighted) Pick(candidates []string) (int, error) {
 		}
 		c.current += c.weight
 		total += c.weight
-		if c.current > bestWeight {
+		if bestIdx < 0 || c.current > bestWeight {
 			bestIdx, bestWeight = i, c.current
 		}
 	}
