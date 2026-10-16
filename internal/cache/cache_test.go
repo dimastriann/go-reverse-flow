@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -162,6 +163,90 @@ func TestCredentialedRequestsBypassCache(t *testing.T) {
 	}
 	if *n != 3 {
 		t.Errorf("inner invocations = %d, want 3", *n)
+	}
+}
+
+// rangeBackend behaves like a real static origin: byte-range requests get
+// a 206 slice with Content-Range, everything else gets the full body.
+func rangeBackend(t *testing.T) (*int, http.Handler) {
+	t.Helper()
+	body := bytes.Repeat([]byte("abcdefg"), 8) // 56B, well under the entry cap
+	n := 0
+	return &n, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		rng := strings.TrimPrefix(r.Header.Get("Range"), "bytes=")
+		if dash := strings.Index(rng, "-"); dash >= 0 {
+			start, _ := strconv.Atoi(rng[:dash])
+			end, _ := strconv.Atoi(rng[dash+1:])
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(body)))
+			w.Header().Set("Content-Length", strconv.Itoa(end-start+1))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(body[start : end+1])
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
+	})
+}
+
+// TestRangedRequestsNeverCached: a stored 206 partial body would poison the
+// whole URI — later ordinary clients of `GET /file` would receive the byte
+// range instead of the file. The key cannot represent the Range variant,
+// so ranged requests bypass lookup and store. Regression for the
+// poisoning vector found in the security review.
+func TestRangedRequestsNeverCached(t *testing.T) {
+	hits, inner := rangeBackend(t)
+	fc := &fakeClock{t: time.Now()}
+	h := New(inner, 30*time.Second, WithClock(fc.now))
+
+	// Ranged request on a cold key: served verbatim (206 of the origin),
+	// unstamped, and nothing stored.
+	ranged := doGet(t, h, "/file", "Range", "bytes=0-9")
+	if got := ranged.Header().Get("X-Cache"); got != "" {
+		t.Errorf("ranged X-Cache = %q, want unstamped pass-through", got)
+	}
+	if ranged.Code != http.StatusPartialContent || ranged.Header().Get("Content-Range") == "" {
+		t.Fatalf("ranged response status %d, want 206 with Content-Range", ranged.Code)
+	}
+	if c := h.(*Cache); c.Len() != 0 {
+		t.Errorf("entries = %d, want 0 (partial content must not store)", c.Len())
+	}
+
+	// The URI is unpoisoned: an ordinary client gets the full 200 body.
+	full := doGet(t, h, "/file")
+	if got := full.Header().Get("X-Cache"); got != "miss" {
+		t.Errorf("full response X-Cache = %q, want fresh miss", got)
+	}
+	if full.Code != http.StatusOK || full.Body.Len() != 56 || !bytes.HasPrefix(full.Body.Bytes(), []byte("abcdefg")) {
+		t.Errorf("full body served %d/%d status %d; want 200 full file", full.Body.Len(), 56, full.Code)
+	}
+
+	// After priming, ranged requests still reach the origin — the cached
+	// full body must not be replayed to them either (206 contract).
+	ranged2 := doGet(t, h, "/file", "Range", "bytes=0-9")
+	if got := ranged2.Header().Get("X-Cache"); got != "" || ranged2.Body.Len() != 10 {
+		t.Errorf("second ranged response X-Cache %q len %d; want unstamped 10B pass-through", got, ranged2.Body.Len())
+	}
+	if *hits != 3 {
+		t.Errorf("inner invocations = %d, want 3", *hits)
+	}
+}
+
+// TestStoreableRejectsPartialContent: even where the eligibility bypass
+// does not apply, partial content never becomes a shared entry (defense in
+// depth for the Range bypass above).
+func TestStoreableRejectsPartialContent(t *testing.T) {
+	fc := &fakeClock{t: time.Now()}
+	n, inner := countingHandler(t)
+	_ = n
+	h := New(inner, 30*time.Second, WithClock(fc.now)).(*Cache)
+
+	rec := &bufferingWriter{}
+	rec.Header().Set("Content-Length", "2")
+	rec.WriteHeader(http.StatusPartialContent)
+	_, _ = rec.Write([]byte("ok"))
+	if _, ok := h.storeable(rec); ok {
+		t.Error("206 response was deemed storeable")
 	}
 }
 

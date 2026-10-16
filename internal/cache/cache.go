@@ -8,7 +8,10 @@
 // because a single-key scheme cannot represent per-flavor variants.
 // Credentialed requests (Authorization, Cookie, Proxy-Authorization) bypass
 // lookup and store for the same reason: the key ignores identity, so a
-// shared entry would replay one client's response body to another. The
+// shared entry would replay one client's response body to another. Range
+// requests bypass likewise, and partial content (206, Content-Range) is
+// never stored either: a partial body under the full-URI key would poison
+// that URI for every client. The
 // tradeoff is documented behavior, not a bug: cached responses are served
 // after full buffering (they must fit maxEntryBytes anyway), and every
 // response through the middleware carries an X-Cache: hit or miss stamp so
@@ -130,6 +133,12 @@ func (c *Cache) eligible(r *http.Request) bool {
 			return false
 		}
 	}
+	// Range requests change what the response body *is* for the same URI:
+	// a stored 206 partial body would be replayed to every ordinary client
+	// of the URI, so ranged requests skip lookup and store entirely.
+	if r.Header.Get("Range") != "" {
+		return false
+	}
 	if r.Header.Get("Accept-Encoding") != "" {
 		return false // naive single-key scheme cannot represent variants
 	}
@@ -150,6 +159,11 @@ func (c *Cache) lookup(key string) (Response, bool) {
 // storeable decides whether the buffered response is cache-safe.
 func (c *Cache) storeable(rec *bufferingWriter) (Response, bool) {
 	if rec.status < 200 || rec.status > 299 {
+		return Response{}, false
+	}
+	// Partial content is never shared: storing a byte-range body under the
+	// full-URI key would replay it to ordinary requests of that URI.
+	if rec.status == http.StatusPartialContent || rec.Header().Get("Content-Range") != "" {
 		return Response{}, false
 	}
 	if rec.Header().Get("Set-Cookie") != "" {
