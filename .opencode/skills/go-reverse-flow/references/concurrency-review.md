@@ -48,3 +48,23 @@ race tests.
 8. **Run what CI runs.** `go test -race -count=1 ./...` on a machine with
    cgo; if the local host can't (Windows without gcc), say so in the commit
    body and rely on the ubuntu runner — but never skip mentioning it.
+9. **Candidate-set contracts of the pickers.** Both pickers carry implicit
+   input contracts any caller must preserve — enumerate them in reviews:
+   `SmoothWeighted.Pick` assumes *distinct* candidate URLs (a duplicate
+   double-bumps its `current` while `total` is added twice but subtracted
+   once — state stays consistent, shares skew); unknown URLs enter the
+   state map permanently as weight-1 ghosts (bounded in this repo because
+   candidates come from config-cardinal pools, but unbounded for a library
+   caller feeding arbitrary URLs); weights are `int` with no magnitude cap,
+   so absurd configs can overflow the sharing arithmetic (defined wrap, no
+   panic). Current callers derive candidates from `HealthyOf`-derived,
+   deduplicated pool slices, so the contracts hold by construction — when
+   you add a new caller, re-prove it, or pin the contract in a doc comment
+   and a test instead of relying on reachability.
+10. **Single-word state wants atomics; compound invariants want locks.**
+    A counter advanced by one `Add` (`balancer.Balancer`) is lock-free; the
+    moment two fields or a map+field must change together
+    (`SmoothWeighted.Pick`) a mutex is the correct tool — removing a lock
+    because "the parts are already atomic" is a data race (e.g. a metrics
+    map's lazy counter insertion vs its reads; see the metrics pattern:
+    lock the map, not the counters).
