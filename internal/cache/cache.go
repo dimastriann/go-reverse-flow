@@ -17,6 +17,10 @@
 // that outgrow the cap stream through verbatim instead of buffering, so no
 // single origin response can balloon proxy memory regardless of size.
 //
+// The entry count is bounded too (maxEntries): flooding distinct keys
+// evicts expired entries first, then an arbitrary one, so resident memory
+// stays bounded no matter how many distinct URIs clients request.
+//
 // The tradeoff is documented behavior, not a bug: stored response bodies
 // are buffered in full and served afterwards, and every response through
 // the middleware carries an X-Cache: hit or miss stamp so the cache is
@@ -33,6 +37,11 @@ import (
 
 // maxEntryBytes caps one cacheable response body to keep memory bounded.
 const maxEntryBytes = 1 << 20 // 1 MiB
+
+// maxEntries caps the tracked-entry count, bounding resident cache memory
+// to maxEntryBytes × maxEntries regardless of how many distinct URIs
+// clients request.
+const maxEntries = 1 << 10 // 1024 entries
 
 // Response is one buffered cache entry.
 type Response struct {
@@ -112,6 +121,7 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := c.storeable(rec); ok {
 		c.mu.Lock()
+		c.evictLocked()
 		c.items[key] = resp
 		c.mu.Unlock()
 		w.Header().Set("X-Cache", "miss")
@@ -268,6 +278,31 @@ func (w *bufferingWriter) commit() {
 	}
 	w.real.WriteHeader(w.status)
 	_, _ = w.real.Write(w.body)
+}
+
+// evictLocked makes room for one more entry when the map is at capacity:
+// an expired entry first, otherwise an arbitrary one. Map iteration order
+// is randomized by Go, so a flooded key space rotates fairly instead of
+// freezing the table or growing it past the cap. Callers hold c.mu.
+func (c *Cache) evictLocked() {
+	if len(c.items) < maxEntries {
+		return
+	}
+	now := c.now()
+	var victim string
+	found := false
+	for k, v := range c.items {
+		if now.After(v.Expires) {
+			victim, found = k, true
+			break
+		}
+		if !found {
+			victim, found = k, true // fallback: the first key seen
+		}
+	}
+	if found {
+		delete(c.items, victim)
+	}
 }
 
 // Len reports the tracked-entry count for tests.

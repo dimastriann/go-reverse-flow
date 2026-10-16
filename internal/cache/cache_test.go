@@ -338,6 +338,47 @@ func TestOversizeResponseStreamsVerbatim(t *testing.T) {
 	}
 }
 
+// TestEntryCountCappedAndExpireDrained: flooding distinct keys cannot grow
+// the tracked table past maxEntries, and at capacity expired entries are
+// the preferred evictions, so stale content drains as fresh requests
+// arrive instead of a full table freezing around it. Pins the fix for the
+// cache-flooding memory-exhaustion channel found in the security review.
+func TestEntryCountCappedAndExpireDrained(t *testing.T) {
+	n, inner := countingHandler(t)
+	fc := &fakeClock{t: time.Now()}
+	h := New(inner, 30*time.Second, WithClock(fc.now)).(*Cache)
+
+	for i := 0; i < maxEntries*2; i++ {
+		if rec := doGet(t, h, fmt.Sprintf("/flood/%d", i)); rec.Body.String() != fmt.Sprintf("call-%d", i+1) {
+			t.Fatalf("flood request %d served body %q", i, rec.Body.String())
+		}
+	}
+	if got := h.Len(); got != maxEntries {
+		t.Fatalf("after flood entries = %d, want %d (cap must hold)", got, maxEntries)
+	}
+	if *n != maxEntries*2 {
+		t.Errorf("inner invocations = %d, want %d (distinct keys, no replays)", *n, maxEntries*2)
+	}
+
+	// Age out the whole table, then flood fresh keys: the sweep must pick
+	// expired victims so no stale entry survives the refill.
+	fc.adv(45 * time.Second)
+	for i := 0; i < maxEntries; i++ {
+		_ = doGet(t, h, fmt.Sprintf("/fresh/%d", i))
+	}
+	stale := 0
+	h.mu.RLock()
+	for _, v := range h.items {
+		if fc.t.After(v.Expires) {
+			stale++
+		}
+	}
+	h.mu.RUnlock()
+	if stale != 0 {
+		t.Errorf("%d expired entries survived the refill, want expired evicted first", stale)
+	}
+}
+
 // TestDisabledCachePassthrough: ttl<=0 returns the inner handler untouched.
 func TestDisabledCachePassthrough(t *testing.T) {
 	n, inner := countingHandler(t)
