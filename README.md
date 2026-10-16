@@ -24,6 +24,8 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 | ✅ v0.4.0 | ⚖️ Smooth weighted round-robin (`backend_weights`, nginx-style interleave) |
 | ✅ v0.4.0 | 🗄️ TTL response cache (`X-Cache: hit/miss`, conservative eligibility) |
 | ✅ v0.5.0 | 🛤️ Path-prefix routing (`routes`, longest-prefix, per-pool health/weights/retries) |
+| ✅ v0.6.0 | 🔒 Cache hardening (credentials/Range/`Vary: *` bypass, bounded buffering + entry count) |
+| ✅ v0.6.0 | 🌍 `LISTEN_ADDR` env override (file config stays portable across replicas) |
 
 ## 🏗️ Architecture
 
@@ -144,8 +146,10 @@ Knob semantics:
 - `rate_limiter` — disabled when `rate` is 0; a positive `rate` (tokens per
   second, with an optional `burst` ceiling) throttles clients with `429`s
 - `cache` — disabled when `ttl` is 0; a positive TTL caches successful
-  idempotent responses (≤1 MiB) and stamps every proxied response with
-  `X-Cache: hit` or `miss`
+  anonymous, whole-representation responses only (GET/HEAD, no credentials,
+  no `Range`, ≤1 MiB, at most 1024 entries) and stamps every proxied
+  response with `X-Cache: hit` or `miss`. Responses that outgrow or bypass
+  the cache stream or serve verbatim, unstamped
 
 The composed request path is `access log → rate limiter → cache → router →
 per-pool proxy`, with `/metrics` and the health checker outside the chain.
@@ -172,7 +176,7 @@ service-name DNS resolving the baked backend URLs automatically.
 
 ## 🗺️ Roadmap
 
-`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → next: least-connections, cache invalidation endpoint, YAML/env config.
+`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → next: least-connections, cache invalidation endpoint, YAML config / more env overrides.
 
 ## 📚 What I'm Learning
 
