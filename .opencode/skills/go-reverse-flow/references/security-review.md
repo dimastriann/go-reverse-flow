@@ -48,7 +48,49 @@ package). This doc is the inventory + checklist.
 8. **Fuzz the boundaries** with a quick test pass: empty/oversized/
    duplicate/malformed headers against anything new.
 
-## Known accepted limitations (surface in reviews, don't "fix" silently)
+## Surface vs. fix — the boundary
+
+Misreading this line is the most expensive mistake a security review can
+make here, so the rule is explicit:
+
+- **Surface only (report, recommend, don't patch):** documented *taste*
+  tradeoffs and things whose fix requires a design decision — e.g. the
+  single-key cache scheme with its explicit bypasses, `X-Cache` stamp
+  design, unauthenticated `/metrics`, or choosing an eviction policy.
+- **Fix now (even against a documented rule):** actual exploitable bugs —
+  client-triggerable poisoning, cross-client response leaks, resource
+  exhaustion driven by client input. If the root cause is a documented
+  rule, that is documentation of a bug, not immunity for it: fix the code
+  AND update the doc comment in the same atomic `fix(scope)` commit with
+  a regression test. "Silent fix" means patching behavior without saying
+  why; it does not mean leaving a live vulnerability on the table.
+- **Reproduce before you fix.** A PoC or a failing test demonstrates the
+  bug is real; the PoC becomes a regression test that stays in the repo.
+- **Re-read the task bar.** Prompts of the form "only write code if you
+  find an actual exploitable bug" are permission to fix, not a muzzling
+  rule — they expect fixes for exactly the findings above.
+
+## Rating severity against real-world backends
+
+Severity is graded against what realistic deployments look like, not
+exotic hypotheticals:
+
+- Personalization derived from request credentials (`Authorization`
+  bearer tokens, session cookies that were set once at login) is the
+  **standard case**, not a corner case. A cache whose key ignores them is
+  one deployment step away from serving user A's body to user B — treat
+  the keying gap as critical-adjacent, not medium-conditional.
+- Range-supporting origins (static/file servers) are similarly the norm;
+  partial-content storage is an availability/correctness poison for every
+  client of that URI.
+- Conditions you cite ("requires a misbehaving backend", "requires
+  `Vary`-less personalization") must be *real* conditions — ask whether
+  the condition is actually common in production before downgrading.
+
+## Known accepted limitations (report context, not a fix-deferral list)
+
+These describe what remains *after* real bugs are fixed; they are
+deployment context to surface, not immunity for a live vulnerability:
 
 - No TLS termination — the proxy serves plaintext; TLS terminates upstream
   or on a fronting LB. Anything else is a design decision, not a patch.

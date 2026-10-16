@@ -68,10 +68,14 @@ touch the same code, the checklist tells you exactly what to verify.
 ## 3. HTTP / proxy security
 
 Security-relevant work (headers, timeouts, caching eligibility, rate limiting,
-/endpoints) gets `references/security-review.md`. It lists what this proxy
+new endpoints) gets `references/security-review.md`. It lists what this proxy
 already deliberately does (ReadHeaderTimeout as slowloris guard, no caching of
 Set-Cookie responses, retry replay protection) so a change doesn't
-accidentally undo what a past phase put in place.
+accidentally undo what a past phase put in place — and it draws the
+surface-vs-fix boundary explicitly: documented *taste* tradeoffs are surfaced
+in the report, but an actual exploitable bug is fixed now with a regression
+test in an atomic `fix(scope)` commit, even when the root cause is a
+documented rule.
 
 ## 4. Test & verification (always, no exceptions)
 

@@ -47,7 +47,11 @@ Chain composition in `cmd/proxy/main.go:104-116`, innermost-first. The shared
 - **New config knob** → `internal/config` struct + unmarshal + `Validate()`
   test rows + `main.go` wiring.
 - **New endpoint** → mount on the mux in `main.go` (only `/metrics` lives
-  outside the proxy chain today).
+  outside the proxy chain today). Health-style endpoints must decide their
+  scope explicitly — the whole checker's set vs one route pool — and take a
+  functional option (e.g. a `WithScope`-style `Option`) if scoped; route
+  pools answer their own 503s, so a node-level verdict should say which
+  traffic it speaks for.
 
 ## House idioms (match these or have a reason)
 
