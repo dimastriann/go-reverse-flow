@@ -128,6 +128,9 @@ Config lives in `config/config.json`:
 
 Knob semantics:
 
+- `LISTEN_ADDR` — environment variable; when set non-empty it overrides the
+  file config's `listen_addr`, so the same config file can serve different
+  ports per replica. Unset/empty means the file value stands as-is
 - `routes` — optional path-prefix routing: requests whose path starts with a
   route prefix go to that pool (longest prefix wins, path forwarded as-is),
   everything else uses the default `backends` pool. Each pool is

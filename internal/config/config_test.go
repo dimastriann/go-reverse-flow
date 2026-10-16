@@ -48,6 +48,74 @@ func TestLoadCustomListenAddr(t *testing.T) {
 	}
 }
 
+// TestApplyEnvOverrideListenAddr pins the LISTEN_ADDR precedence contract:
+// the environment beats the file's listen_addr only when set non-empty, and
+// the file value (explicit or default) stands otherwise. The lookup key is
+// asserted too so the variable name can't drift.
+func TestApplyEnvOverrideListenAddr(t *testing.T) {
+	tests := []struct {
+		name         string
+		json         string
+		env          string
+		wantAddr     string
+		wantOverride bool
+	}{
+		{
+			name:         "env wins over file value",
+			json:         `{"listen_addr":":9090","backends":["http://x:1"]}`,
+			env:          ":7777",
+			wantAddr:     ":7777",
+			wantOverride: true,
+		},
+		{
+			name:         "env wins over default value",
+			json:         `{"backends":["http://x:1"]}`,
+			env:          ":7777",
+			wantAddr:     ":7777",
+			wantOverride: true,
+		},
+		{
+			name:         "empty env falls back to file value",
+			json:         `{"listen_addr":":9090","backends":["http://x:1"]}`,
+			env:          "",
+			wantAddr:     ":9090",
+			wantOverride: false,
+		},
+		{
+			name:         "empty env falls back to default value",
+			json:         `{"backends":["http://x:1"]}`,
+			env:          "",
+			wantAddr:     DefaultListenAddr,
+			wantOverride: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Load(writeFixture(t, tt.json))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+
+			var queriedKey string
+			lookup := func(key string) string {
+				queriedKey = key
+				return tt.env
+			}
+
+			if got := cfg.ApplyEnvOverride(lookup); got != tt.wantOverride {
+				t.Errorf("ApplyEnvOverride = %v, want %v", got, tt.wantOverride)
+			}
+			if queriedKey != EnvListenAddr {
+				t.Errorf("lookup queried %q, want %q", queriedKey, EnvListenAddr)
+			}
+			if cfg.ListenAddr != tt.wantAddr {
+				t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, tt.wantAddr)
+			}
+		})
+	}
+}
+
 func TestLoadMissingFile(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "missing.json"))
 	if err == nil {

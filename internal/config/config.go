@@ -14,6 +14,10 @@ import (
 const (
 	DefaultListenAddr = ":8080"
 
+	// EnvListenAddr, when set non-empty, overrides ListenAddr from the file
+	// config (ops run the same config file at different ports per replica).
+	EnvListenAddr = "LISTEN_ADDR"
+
 	// Default health-check settings, used when the JSON values are absent.
 	DefaultHealthInterval = 5 * time.Second
 	DefaultHealthTimeout  = time.Second
@@ -137,6 +141,19 @@ func (s RateSettings) Values() (rate float64, burst int) {
 		burst = *s.Burst
 	}
 	return rate, burst
+}
+
+// ApplyEnvOverride applies runtime environment overrides on top of the
+// loaded file config. lookup is injected (typically os.Getenv) so callers
+// and tests stay off the process environment. An override wins only when
+// EnvListenAddr resolves non-empty; unset/empty means the file value stands.
+// It reports whether an override was applied.
+func (c *Config) ApplyEnvOverride(lookup func(string) string) bool {
+	if v := lookup(EnvListenAddr); v != "" {
+		c.ListenAddr = v
+		return true
+	}
+	return false
 }
 
 // Load reads the JSON config file at path and validates it.
