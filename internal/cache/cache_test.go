@@ -126,6 +126,45 @@ func TestEligibilityBypasses(t *testing.T) {
 	}
 }
 
+// TestCredentialedRequestsBypassCache: Authorization and Cookie requests
+// bypass lookup and store. The key ignores identity, so without this both
+// leak directions exist: a credentialed client must not receive an
+// anonymously cached body, and its own body must never be replayed to
+// other clients of the URI. Regression for the cross-client leak found in
+// the security review.
+func TestCredentialedRequestsBypassCache(t *testing.T) {
+	n, inner := countingHandler(t)
+	fc := &fakeClock{t: time.Now()}
+	h := New(inner, 30*time.Second, WithClock(fc.now))
+
+	if rec := doGet(t, h, "/x"); rec.Header().Get("X-Cache") != "miss" {
+		t.Fatalf("anonymous prime: X-Cache %q, want miss", rec.Header().Get("X-Cache"))
+	}
+
+	authed := doGet(t, h, "/x", "Authorization", "Bearer secret")
+	if got := authed.Header().Get("X-Cache"); got != "" {
+		t.Errorf("credentialed X-Cache = %q, want unstamped pass-through", got)
+	}
+	if authed.Body.String() != "call-2" {
+		t.Errorf("credentialed body %q, want fresh call-2, not the anonymous call-1", authed.Body.String())
+	}
+	if rec := doGet(t, h, "/x", "Cookie", "session=1"); rec.Body.String() != "call-3" {
+		t.Errorf("cookie body %q, want fresh call-3", rec.Body.String())
+	}
+
+	// Still untouched for anonymous clients: no credentialed body leaked
+	// into the entry and no second entry was stored.
+	if rec := doGet(t, h, "/x"); rec.Header().Get("X-Cache") != "hit" || rec.Body.String() != "call-1" {
+		t.Errorf("anonymous replay X-Cache %q body %q, want hit with call-1", rec.Header().Get("X-Cache"), rec.Body.String())
+	}
+	if c := h.(*Cache); c.Len() != 1 {
+		t.Errorf("entries = %d, want 1 (credentialed responses must not store)", c.Len())
+	}
+	if *n != 3 {
+		t.Errorf("inner invocations = %d, want 3", *n)
+	}
+}
+
 // TestSetCookieNeverCached pins response-side storeability rules.
 func TestSetCookieNeverCached(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

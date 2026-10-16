@@ -5,7 +5,10 @@
 // Content-Length at or under maxEntryBytes are cached, requests/responses
 // carrying Cache-Control: no-store are bypassed, Set-Cookie responses are
 // never shared, and Accept-Encoding requests bypass the keying entirely
-// because a single-key scheme cannot represent per-flavor variants. The
+// because a single-key scheme cannot represent per-flavor variants.
+// Credentialed requests (Authorization, Cookie, Proxy-Authorization) bypass
+// lookup and store for the same reason: the key ignores identity, so a
+// shared entry would replay one client's response body to another. The
 // tradeoff is documented behavior, not a bug: cached responses are served
 // after full buffering (they must fit maxEntryBytes anyway), and every
 // response through the middleware carries an X-Cache: hit or miss stamp so
@@ -117,6 +120,15 @@ func (c *Cache) eligible(r *http.Request) bool {
 	}
 	if r.Header.Get("X-Cache-Bypass") != "" {
 		return false
+	}
+	// Credentials are the sharpest per-client variant: replaying a stored
+	// entry across an Authorization/Cookie boundary serves one client's
+	// response body to another, so credentialed requests skip lookup and
+	// store entirely.
+	for _, h := range []string{"Authorization", "Cookie", "Proxy-Authorization"} {
+		if r.Header.Get(h) != "" {
+			return false
+		}
 	}
 	if r.Header.Get("Accept-Encoding") != "" {
 		return false // naive single-key scheme cannot represent variants
