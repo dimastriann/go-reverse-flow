@@ -11,11 +11,16 @@
 // shared entry would replay one client's response body to another. Range
 // requests bypass likewise, and partial content (206, Content-Range) is
 // never stored either: a partial body under the full-URI key would poison
-// that URI for every client. The
-// tradeoff is documented behavior, not a bug: cached responses are served
-// after full buffering (they must fit maxEntryBytes anyway), and every
-// response through the middleware carries an X-Cache: hit or miss stamp so
-// the cache is observable from curl in the demo.
+// that URI for every client.
+//
+// Buffering is bounded: stored entries fit maxEntryBytes, and responses
+// that outgrow the cap stream through verbatim instead of buffering, so no
+// single origin response can balloon proxy memory regardless of size.
+//
+// The tradeoff is documented behavior, not a bug: stored response bodies
+// are buffered in full and served afterwards, and every response through
+// the middleware carries an X-Cache: hit or miss stamp so the cache is
+// observable from curl in the demo.
 package cache
 
 import (
@@ -89,8 +94,15 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serveBuffered(w, resp)
 		return
 	}
-	rec := &bufferingWriter{}
+	rec := &bufferingWriter{real: w}
 	c.next.ServeHTTP(rec, r)
+
+	if rec.overflow {
+		// The response outgrew the buffer cap mid-stream: it was committed
+		// and streamed verbatim through the real writer already. Serving
+		// again would duplicate the prologue; storing is pointless.
+		return
+	}
 
 	resp := Response{
 		Status:  rec.status,
@@ -203,10 +215,18 @@ func serveBuffered(w http.ResponseWriter, resp Response) {
 
 // bufferingWriter buffers the whole inner response; the cache serves it only
 // through serveBuffered afterwards, so nothing reaches the client twice.
+//
+// The body never exceeds maxEntryBytes in memory: the first write that
+// would trip the cap commits the buffered prologue to the real writer and
+// switches to pass-through, so an attacker-sized response streams through
+// instead of being accumulated.
 type bufferingWriter struct {
-	header http.Header
-	status int
-	body   []byte
+	real http.ResponseWriter
+
+	header   http.Header
+	status   int
+	body     []byte
+	overflow bool
 }
 
 func (w *bufferingWriter) Header() http.Header {
@@ -226,8 +246,28 @@ func (w *bufferingWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
+	if w.overflow {
+		return w.real.Write(p)
+	}
+	if len(w.body)+len(p) > maxEntryBytes {
+		w.commit()
+		return w.real.Write(p)
+	}
 	w.body = append(w.body, p...)
 	return len(p), nil
+}
+
+// commit flushes the buffered prologue to the real writer and marks the
+// writer as streaming; after this point nothing else is accumulated.
+func (w *bufferingWriter) commit() {
+	w.overflow = true
+	for k, vs := range w.Header() {
+		for _, v := range vs {
+			w.real.Header().Add(k, v)
+		}
+	}
+	w.real.WriteHeader(w.status)
+	_, _ = w.real.Write(w.body)
 }
 
 // Len reports the tracked-entry count for tests.

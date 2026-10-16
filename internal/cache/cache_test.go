@@ -304,6 +304,40 @@ func TestOversizedResponseNotCached(t *testing.T) {
 	}
 }
 
+// TestOversizeResponseStreamsVerbatim: a response that outgrows the cap
+// mid-stream is committed and streamed through whole — the buffered
+// prologue reaches the client exactly once, nothing is truncated, nothing
+// is stored, and the resident buffer is bounded by maxEntryBytes instead
+// of by the origin's response size. Pins the fix for the unbounded-buffer
+// memory-exhaustion vector found in the security review.
+func TestOversizeResponseStreamsVerbatim(t *testing.T) {
+	prologue := bytes.Repeat([]byte("a"), maxEntryBytes) // buffered up to the cap
+	rest := bytes.Repeat([]byte("b"), maxEntryBytes)     // second write trips the cap
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(2*maxEntryBytes))
+		_, _ = w.Write(prologue)
+		_, _ = w.Write(rest)
+	})
+	fc := &fakeClock{t: time.Now()}
+	h := New(inner, 30*time.Second, WithClock(fc.now))
+
+	rec := doGet(t, h, "/big-stream")
+	want := bytes.Repeat([]byte("a"), maxEntryBytes)
+	want = append(want, rest...)
+	if !bytes.Equal(rec.Body.Bytes(), want) {
+		t.Fatalf("streamed body %d bytes, want the intact %d-byte response", rec.Body.Len(), len(want))
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(2*maxEntryBytes) {
+		t.Errorf("Content-Length = %q, want origin value replayed", got)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "" {
+		t.Errorf("X-Cache = %q, want unstamped (never cached)", got)
+	}
+	if c := h.(*Cache); c.Len() != 0 {
+		t.Errorf("entries = %d, want 0 (oversize must not store)", c.Len())
+	}
+}
+
 // TestDisabledCachePassthrough: ttl<=0 returns the inner handler untouched.
 func TestDisabledCachePassthrough(t *testing.T) {
 	n, inner := countingHandler(t)
