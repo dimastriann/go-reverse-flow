@@ -24,7 +24,7 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 | ✅ v0.4.0 | ⚖️ Smooth weighted round-robin (`backend_weights`, nginx-style interleave) |
 | ✅ v0.4.0 | 🗄️ TTL response cache (`X-Cache: hit/miss`, conservative eligibility) |
 | ✅ v0.5.0 | 🛤️ Path-prefix routing (`routes`, longest-prefix, per-pool health/weights/retries) |
-| ✅ v0.6.0 | 🔒 Cache hardening (credentials/Range/`Vary: *` bypass, bounded buffering + entry count) |
+| ✅ v0.6.0 | 🔒 Cache hardening (credentials/Range bypass, partial-content rejection, bounded buffering + entry count) |
 | ✅ v0.6.0 | 🌍 `LISTEN_ADDR` env override (file config stays portable across replicas) |
 
 ## 🏗️ Architecture
