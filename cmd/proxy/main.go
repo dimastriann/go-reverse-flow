@@ -110,8 +110,9 @@ func main() {
 	// limiter (throttled clients never reach the cache), and the access log
 	// outermost so 429s and cache hits/misses are all logged.
 	proxied := http.Handler(routed)
+	var cacheLayer *cache.Cache
 	if ttl := cfg.Cache.Value(); ttl > 0 {
-		proxied = cache.New(proxied, ttl)
+		cacheLayer, proxied = cache.NewCache(proxied, ttl)
 		log.Printf("cache: %s ttl for cacheable GET/HEAD responses", ttl)
 	}
 	if rate, burst := cfg.RateLimit.Values(); rate > 0 {
@@ -124,9 +125,14 @@ func main() {
 		log.Printf("balancer: smooth weighted %v over %d backend(s)", cfg.Weights, len(cfg.Backends))
 	}
 
-	// /metrics serves the counter/gauge exposition; everything else is proxied.
+	// /metrics serves the exposition and /cache/purge the invalidation
+	// endpoint (while the cache is enabled); everything else is proxied.
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", scrape.Handler())
+	if cacheLayer != nil {
+		mux.Handle("/cache/purge", cacheLayer.PurgeHandler())
+		log.Printf("cache: POST /cache/purge invalidates every entry")
+	}
 	mux.Handle("/", chain)
 
 	// ReadHeaderTimeout guards slowloris-style connections; other timeouts
