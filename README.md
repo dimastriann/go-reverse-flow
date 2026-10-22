@@ -26,6 +26,7 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 | ✅ v0.5.0 | 🛤️ Path-prefix routing (`routes`, longest-prefix, per-pool health/weights/retries) |
 | ✅ v0.6.0 | 🔒 Cache hardening (credentials/Range bypass, partial-content rejection, bounded buffering + entry count) |
 | ✅ v0.6.0 | 🌍 `LISTEN_ADDR` env override (file config stays portable across replicas) |
+| ✅ v0.7.0 | 🧹 Cache invalidation endpoint (`POST /cache/purge`, 204 + `X-Purged-Entries`, `405` for other methods) |
 
 ## 🏗️ Architecture
 
@@ -47,7 +48,8 @@ INFO request remote_addr=[::1]:51076 method=GET path=/index.html backend=http://
 Observability and defense come on the same listener:
 
 - `GET /metrics` — Prometheus-style exposition: `grf_backend_requests_total{backend=...}` counters and `grf_backend_healthy{backend=...}` gauges (from the live checker)
-- `rate_limiter` config — optional per-client token bucket: over-limit clients get `429` + computed `Retry-After`, still logged; `/metrics` itself is never throttled
+- `POST /cache/purge` — invalidates every cached entry (only mounted while `cache.ttl` is positive); answers `204` with `X-Purged-Entries: <n>` and refuses other methods with `405`, so a stray GET or crawler cannot wipe the cache
+- `rate_limiter` config — optional per-client token bucket: over-limit clients get `429` + computed `Retry-After`, still logged; `/metrics` and `/cache/purge` are never throttled
 
 ## 🛠️ Tech Stack
 
@@ -176,7 +178,7 @@ service-name DNS resolving the baked backend URLs automatically.
 
 ## 🗺️ Roadmap
 
-`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → next: least-connections, cache invalidation endpoint, YAML config / more env overrides.
+`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → next: least-connections, Grafana dashboard JSON, YAML config / more env overrides.
 
 ## 📚 What I'm Learning
 
