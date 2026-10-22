@@ -411,3 +411,86 @@ func TestPurge(t *testing.T) {
 		t.Errorf("after purge entries = %d, want 0", c.Len())
 	}
 }
+
+// TestPurgeHandlerLifecycle covers the invalidation endpoint through a
+// primed entry: POST purges and the next GET re-fetches from the origin
+// (miss), while non-POST methods are refused with Allow and keep entries.
+func TestPurgeHandlerLifecycle(t *testing.T) {
+	n, inner := countingHandler(t)
+	fc := &fakeClock{t: time.Now()}
+	c, middleware := NewCache(inner, time.Minute, WithClock(fc.now))
+
+	purge := c.PurgeHandler()
+
+	// Prime the cache.
+	_ = doGet(t, middleware, "/x")
+	_ = doGet(t, middleware, "/x")
+	if c.Len() != 1 {
+		t.Fatalf("primed entries = %d, want 1", c.Len())
+	}
+
+	// GET on the endpoint is refused and leaves entries untouched.
+	recGet := httptest.NewRecorder()
+	purge.ServeHTTP(recGet, httptest.NewRequest(http.MethodGet, "/cache/purge", nil))
+	if recGet.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET purge status = %d, want 405", recGet.Code)
+	}
+	if allow := recGet.Header().Get("Allow"); allow != "POST" {
+		t.Errorf("Allow header = %q, want POST", allow)
+	}
+	if c.Len() != 1 {
+		t.Errorf("GET must not purge: entries = %d, want 1", c.Len())
+	}
+
+	// POST purges; the count is reported and the next request is a miss that
+	// reaches the inner handler again.
+	recPost := httptest.NewRecorder()
+	purge.ServeHTTP(recPost, httptest.NewRequest(http.MethodPost, "/cache/purge", nil))
+	if recPost.Code != http.StatusNoContent {
+		t.Errorf("POST purge status = %d, want 204", recPost.Code)
+	}
+	if got := recPost.Header().Get("X-Purged-Entries"); got != "1" {
+		t.Errorf("X-Purged-Entries = %q, want 1", got)
+	}
+	if c.Len() != 0 {
+		t.Errorf("after POST entries = %d, want 0", c.Len())
+	}
+
+	after := doGet(t, middleware, "/x")
+	if got := after.Header().Get("X-Cache"); got != "miss" {
+		t.Errorf("post-purge X-Cache = %q, want miss", got)
+	}
+	if *n != 2 {
+		t.Errorf("inner invocations = %d, want 2 (primed once, re-fetched after purge)", *n)
+	}
+}
+
+// TestNewCacheDisabledShape pins the disabled-cache pair: middleware =
+// the inner handler behavior (instance nil, so wiring skips the purge
+// route) and requests flow through untouched.
+func TestNewCacheDisabledShape(t *testing.T) {
+	_, inner := countingHandler(t)
+	c, h := NewCache(inner, 0)
+	if c != nil {
+		t.Error("disabled NewCache returned a non-nil *Cache")
+	}
+	// Behavioral check (handler func values are uncomparable): a request
+	// must flow through untouched.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("disabled middleware status = %d, want pass-through 200", rec.Code)
+	}
+}
+
+// TestNewStillBuildsMiddleware keeps the convenience constructor aligned
+// with NewCache (same instance behind the middleware).
+func TestNewStillBuildsMiddleware(t *testing.T) {
+	_, inner := countingHandler(t)
+	fc := &fakeClock{t: time.Now()}
+	h := New(inner, time.Minute, WithClock(fc.now))
+	c := h.(*Cache)
+	if c == nil || c.ttl != time.Minute {
+		t.Fatal("New did not produce an enabled Cache instance")
+	}
+}

@@ -28,6 +28,7 @@
 package cache
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -77,6 +78,17 @@ func New(next http.Handler, ttl time.Duration, opts ...Option) http.Handler {
 	if ttl <= 0 {
 		return next
 	}
+	_, h := NewCache(next, ttl, opts...)
+	return h
+}
+
+// NewCache builds the concrete Cache alongside its middleware form. Callers
+// needing an operational handle on the instance (the invalidation endpoint)
+// use this; plain chain wiring uses New.
+func NewCache(next http.Handler, ttl time.Duration, opts ...Option) (*Cache, http.Handler) {
+	if ttl <= 0 {
+		return nil, next
+	}
 	c := &Cache{
 		next:  next,
 		ttl:   ttl,
@@ -86,7 +98,7 @@ func New(next http.Handler, ttl time.Duration, opts ...Option) http.Handler {
 	for _, opt := range opts {
 		opt(c)
 	}
-	return c
+	return c, c
 }
 
 // ServeHTTP implements http.Handler.
@@ -318,4 +330,32 @@ func (c *Cache) Purge() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.items = map[string]Response{}
+}
+
+// PurgeHandler serves the invalidation endpoint: POST clears every entry
+// and answers 204 with the removed count in X-Purged-Entries; other methods
+// get 405 with an Allow hint, so a stray GET or a crawler cannot wipe the
+// cache. Mount it on the mux only while the cache is enabled (a disabled
+// cache has no entries to purge).
+func (c *Cache) PurgeHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			http.Error(w, "method not allowed: POST purges the cache", http.StatusMethodNotAllowed)
+			return
+		}
+		n := c.Len()
+		c.Purge()
+		log.Printf("cache: purged %d entr%s via %s", n, pluralEntries(n), r.RemoteAddr)
+		w.Header().Set("X-Purged-Entries", strconv.Itoa(n))
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+// pluralEntries renders "y"/"ies" for the purged-count log line.
+func pluralEntries(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
 }
