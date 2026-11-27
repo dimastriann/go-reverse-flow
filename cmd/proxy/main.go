@@ -41,7 +41,7 @@ const (
 	shutdownTimeout = 10 * time.Second
 
 	// version is reported by the admin status API.
-	version = "v0.10.0"
+	version = "v0.11.0"
 )
 
 // appRuntime is one immutable configuration generation: everything built
