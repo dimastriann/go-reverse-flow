@@ -10,6 +10,7 @@ package admin
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"io"
 	"net/http"
 	"runtime"
 	"time"
@@ -47,6 +48,10 @@ type Server struct {
 	pass      string
 	startedAt time.Time
 	now       func() time.Time
+
+	configSource func() any         // optional: GET /api/config
+	applyFn      func([]byte) error // optional: PUT /api/config
+	reloadFn     func() error       // optional: POST /api/reload
 }
 
 // Option configures a Server.
@@ -56,6 +61,31 @@ type Option func(*Server)
 func WithClock(fn func() time.Time) Option {
 	return func(s *Server) {
 		s.now = fn
+	}
+}
+
+// WithConfigSource registers the GET /api/config payload provider. The
+// returned value is serialized with its own JSON tags.
+func WithConfigSource(fn func() any) Option {
+	return func(s *Server) {
+		s.configSource = fn
+	}
+}
+
+// WithApply registers the PUT /api/config handler: it receives the raw JSON
+// body (bounded), validates + applies + persists it, and returns an error to
+// reject with 400 while the old configuration stays live.
+func WithApply(fn func([]byte) error) Option {
+	return func(s *Server) {
+		s.applyFn = fn
+	}
+}
+
+// WithReload registers the POST /api/reload handler: re-reads the config
+// file, applies it, and returns an error to reject with 400.
+func WithReload(fn func() error) Option {
+	return func(s *Server) {
+		s.reloadFn = fn
 	}
 }
 
@@ -76,10 +106,17 @@ func New(username, password string, status StatusSource, opts ...Option) *Server
 	return s
 }
 
-// Handler returns the fully authenticated API mux.
+// Handler returns the fully authenticated API mux. Management endpoints are
+// registered only when their hooks were provided.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", s.handleStatus)
+	if s.configSource != nil || s.applyFn != nil {
+		mux.HandleFunc("/api/config", s.handleConfig)
+	}
+	if s.reloadFn != nil {
+		mux.HandleFunc("/api/reload", s.handleReload)
+	}
 	return s.requireAuth(mux)
 }
 
@@ -95,6 +132,57 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	st.GoVersion = runtime.Version()
 	st.Uptime = s.now().Sub(s.startedAt).Round(time.Second).String()
 	writeJSON(w, http.StatusOK, st)
+}
+
+// handleConfig serves GET /api/config (the current configuration) and
+// PUT /api/config (validate + apply + persist a new one; failures leave the
+// live configuration untouched).
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if s.configSource == nil {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.configSource())
+	case http.MethodPut:
+		if s.applyFn == nil {
+			http.NotFound(w, r)
+			return
+		}
+		body := http.MaxBytesReader(w, r.Body, 1<<20)
+		if err := s.applyFn(readAll(body)); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleReload serves POST /api/reload.
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.reloadFn(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
+}
+
+// readAll bounds and drains a request body.
+func readAll(r io.Reader) []byte {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return nil
+	}
+	return body
 }
 
 // requireAuth wraps a handler with Basic Auth checks; comparison is constant

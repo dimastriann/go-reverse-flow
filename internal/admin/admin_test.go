@@ -2,8 +2,10 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -122,6 +124,128 @@ func TestStatusMethodGuard(t *testing.T) {
 	}
 	if allow := rec.Header().Get("Allow"); allow != http.MethodGet {
 		t.Errorf("Allow = %q, want GET", allow)
+	}
+}
+
+// TestConfigEndpoints covers GET/PUT /api/config with the injected hooks:
+// view returns the provided payload, PUT feeds the body to the applier,
+// applier errors become 400 with the message, and missing hooks 404.
+func TestConfigEndpoints(t *testing.T) {
+	current := map[string]any{"listen_addr": ":8080"}
+	var applied []byte
+
+	s := New("admin", "s3cret", fixedStatus,
+		WithConfigSource(func() any { return current }),
+		WithApply(func(body []byte) error {
+			if string(body) != `{"listen_addr":":9090"}` {
+				return fmt.Errorf("unexpected body %q", body)
+			}
+			applied = body
+			current["listen_addr"] = ":9090"
+			return nil
+		}),
+	)
+	h := s.Handler()
+
+	// GET view.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", rec.Code)
+	}
+	var view map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("view not JSON: %v", err)
+	}
+	if view["listen_addr"] != ":8080" {
+		t.Errorf("view listen_addr = %v", view["listen_addr"])
+	}
+
+	// PUT applied.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"listen_addr":":9090"}`))
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	if applied == nil {
+		t.Error("applier was never invoked")
+	}
+
+	// Applier rejection becomes 400 with the message.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"bad":true}`))
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("rejected PUT status = %d, want 400", rec.Code)
+	}
+	var errPayload struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &errPayload)
+	if !strings.Contains(errPayload.Error, "unexpected body") {
+		t.Errorf("400 body = %q, want applier message", rec.Body.String())
+	}
+
+	// Unauthed PUT is still 401 (auth wraps the management surface).
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("unauth PUT status = %d, want 401", rec.Code)
+	}
+}
+
+// TestReloadEndpoint covers POST /api/reload success and error mapping, and
+// that the route disappears without the hook.
+func TestReloadEndpoint(t *testing.T) {
+	result := error(nil)
+	s := New("admin", "s3cret", fixedStatus,
+		WithReload(func() error { return result }),
+	)
+	h := s.Handler()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/reload", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload status = %d, want 200", rec.Code)
+	}
+
+	result = fmt.Errorf("config file invalid")
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/reload", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("failed reload status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "config file invalid") {
+		t.Errorf("body = %q, want the reload error", rec.Body.String())
+	}
+
+	// GET is refused (POST-only endpoint).
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/reload", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET reload status = %d, want 405", rec.Code)
+	}
+
+	// Without the hook the route is not registered at all (auth passes, then
+	// the mux answers 404).
+	bare := New("admin", "s3cret", fixedStatus).Handler()
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/reload", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	bare.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("bare server reload status = %d, want 404", rec.Code)
 	}
 }
 
