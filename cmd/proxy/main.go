@@ -225,10 +225,12 @@ func main() {
 	}
 
 	// The proxy listener keeps one stable handler across generations: it
-	// delegates to whichever generation is current.
+	// delegates to whichever generation is current. The access ring is a
+	// long-lived resident of that stable layer, so history survives reloads.
+	ring := logging.NewRing(200)
 	accessLog := logging.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current.Load().proxy.ServeHTTP(w, r)
-	}))
+	}), logging.WithRing(ring))
 
 	adminListen, adminUser, adminPass, adminEnabled := cfg.Admin.Values()
 	adminStatus := func() admin.Status {
@@ -266,6 +268,7 @@ func main() {
 	if adminEnabled {
 		adminAPI := admin.New(adminUser, adminPass, adminStatus,
 			admin.WithConfigSource(func() any { return current.Load().cfg }),
+			admin.WithLogTail(func(limit int) any { return ring.Tail(limit) }),
 			admin.WithApply(func(body []byte) error {
 				next, err := config.Parse(body)
 				if err != nil {
