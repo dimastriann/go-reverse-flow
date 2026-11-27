@@ -54,7 +54,7 @@ Observability and defense come on the same listener:
 ## 🛠️ Tech Stack
 
 - Go 1.27+
-- `net/http`, `net/http/httputil` (ReverseProxy), `log/slog` — no third-party deps
+- `net/http`, `net/http/httputil` (ReverseProxy), `log/slog` — no third-party deps, **except one deliberate addition**: `gopkg.in/yaml.v3` for YAML config support
 
 ## 📦 Project Structure
 
@@ -100,7 +100,9 @@ python3 -m http.server 8002
 go run ./cmd/proxy
 ```
 
-Config lives in `config/config.json`:
+Config lives in `config/config.json`; the same schema in YAML is supported
+too — `config/config.yaml.example` documents every knob, and the format is
+detected by file extension (`-config config/config.yaml`):
 
 ```json
 {
@@ -178,7 +180,7 @@ service-name DNS resolving the baked backend URLs automatically.
 
 ## 🗺️ Roadmap
 
-`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → next: least-connections, Grafana dashboard JSON, YAML config / more env overrides.
+`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → `v0.8.0` YAML config → next: admin API + management dashboard (auth-protected, separate listener), least-connections, Grafana dashboard JSON.
 
 ## 📚 What I'm Learning
 

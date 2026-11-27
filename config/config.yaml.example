@@ -1,0 +1,35 @@
+# YAML config example for go-reverse-flow.
+# Save as config/config.yaml and run: go run ./cmd/proxy -config config/config.yaml
+# Format is detected by extension: .yaml/.yml -> YAML, anything else -> JSON.
+# The schema is identical to config.json; both formats share one semantics path.
+
+listen_addr: ":8080"
+
+backends:
+  - http://localhost:8001
+  - http://localhost:8002
+
+# Optional: smooth weighted round-robin. Entries align with `backends`
+# (length must match or the key is omitted); unlisted route backends weigh 1.
+backend_weights: [3, 1]
+
+# Optional: path-prefix routing. Longest prefix wins; unmatched paths use the
+# default pool. The path is forwarded as-is.
+routes:
+  - prefix: /api
+    backends:
+      - http://localhost:8003
+
+# Optional: health probes.
+health:
+  interval: 5s   # Go duration strings or plain seconds (5)
+  timeout: 1s
+
+# Optional: per-client token-bucket throttling. rate <= 0 disables it.
+rate_limiter:
+  rate: 0
+  burst: 0
+
+# Optional: TTL response cache. ttl <= 0 disables it.
+cache:
+  ttl: 0s
