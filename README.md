@@ -29,6 +29,7 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 | ✅ v0.7.0 | 🧹 Cache invalidation endpoint (`POST /cache/purge`, 204 + `X-Purged-Entries`, `405` for other methods) |
 | ✅ v0.8.0 | 📄 YAML config (extension auto-detection, one semantics path for both formats) |
 | ✅ v0.9.0 | 🖥️ Admin dashboard (auth-protected separate listener, `GET /api/status`, embedded Svelte 5 UI) |
+| ✅ v0.10.0 | 🔥 Hot reload (`GET/PUT /api/config` + `POST /api/reload`, atomic generation swap, no restart) |
 
 ## 🏗️ Architecture
 
@@ -60,6 +61,14 @@ is present):
 
 - `GET /api/status` — JSON: version, uptime, listen addresses, per-backend
   health + request counters, cache/rate-limit knobs
+- `GET /api/config` — the live configuration (JSON)
+- `PUT /api/config` — validate + apply + persist a new configuration **hot**:
+  backends, weights, routes, health, cache, and rate-limit knobs rebuild
+  atomically with in-flight requests drained on the old generation;
+  `listen_addr` and admin changes are rejected with a restart-required
+  message; the file is rewritten in its own format (JSON or YAML) behind a
+  `.bak` backup
+- `POST /api/reload` — discard API edits and re-read the config file
 - `/` — the embedded dashboard: status cards, backend health table with live
   counters (5s auto-refresh), cache purge shortcut, `/metrics` link
 
@@ -193,7 +202,7 @@ service-name DNS resolving the baked backend URLs automatically.
 
 ## 🗺️ Roadmap
 
-`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → `v0.8.0` YAML config → `v0.9.0` admin dashboard → next: config editing + hot reload, least-connections, Grafana dashboard JSON.
+`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → `v0.8.0` YAML config → `v0.9.0` admin dashboard → `v0.10.0` hot reload → next: editor UI forms, least-connections, Grafana dashboard JSON.
 
 ## 📚 What I'm Learning
 
