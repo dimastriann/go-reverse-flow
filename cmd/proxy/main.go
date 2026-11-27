@@ -292,6 +292,7 @@ func main() {
 		adminMux.Handle("/api/status", adminAPI.Handler())
 		adminMux.Handle("/api/config", adminAPI.Handler())
 		adminMux.Handle("/api/reload", adminAPI.Handler())
+		adminMux.Handle("/api/logs", adminAPI.Handler())
 		adminMux.Handle("/", admin.UIHandler())
 		adminSrv := &http.Server{
 			Addr:              adminListen,
