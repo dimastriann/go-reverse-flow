@@ -27,7 +27,9 @@ func newTestServer(t *testing.T) *Server {
 }
 
 // TestAuthEnforced covers 401 without/wrong credentials, and 200 with the
-// right ones — including the WWW-Authenticate challenge header.
+// right ones. The 401 deliberately carries no WWW-Authenticate challenge so
+// the browser uses the dashboard's own login form instead of its native
+// popup.
 func TestAuthEnforced(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
@@ -38,8 +40,8 @@ func TestAuthEnforced(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("no-credentials status = %d, want 401", rec.Code)
 	}
-	if ch := rec.Header().Get("WWW-Authenticate"); ch == "" {
-		t.Error("missing WWW-Authenticate challenge on 401")
+	if ch := rec.Header().Get("WWW-Authenticate"); ch != "" {
+		t.Errorf("WWW-Authenticate = %q, want empty (native dialog would fight the form)", ch)
 	}
 
 	// Wrong password.

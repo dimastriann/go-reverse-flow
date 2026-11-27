@@ -98,14 +98,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireAuth wraps a handler with Basic Auth checks; comparison is constant
-// time per credential part.
+// time per credential part. The 401 deliberately carries no
+// WWW-Authenticate challenge: the dashboard owns the login UX with its own
+// form, and a challenge would make browsers pop their native dialog on top
+// of it (curl users pass -u regardless).
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		userOK := subtle.ConstantTimeCompare([]byte(user), []byte(s.user)) == 1
 		passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(s.pass)) == 1
 		if !ok || !userOK || !passOK {
-			w.Header().Set("WWW-Authenticate", `Basic realm="go-reverse-flow admin", charset="UTF-8"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
