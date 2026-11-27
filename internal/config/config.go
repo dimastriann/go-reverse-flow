@@ -42,7 +42,8 @@ const (
 
 // Duration is time.Duration with human-friendly JSON parsing: accepts Go
 // duration strings like "500ms", "5s", or "2m" (plain integers are treated as
-// whole seconds for convenience).
+// whole seconds for convenience). It marshals back as a duration string in
+// both JSON and YAML, so persisted configs stay human-readable.
 type Duration time.Duration
 
 // UnmarshalJSON implements json.Unmarshaler.
@@ -66,24 +67,46 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON implements json.Marshaler.
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Duration(d).String())
+}
+
+// MarshalYAML implements yaml.Marshaler.
+func (d Duration) MarshalYAML() (any, error) {
+	return time.Duration(d).String(), nil
+}
+
 // Config is the top-level proxy configuration.
 type Config struct {
-	ListenAddr string         `json:"listen_addr"`
-	Backends   []string       `json:"backends"`
-	Weights    []int          `json:"backend_weights,omitempty"` // optional, aligned with backends
-	Routes     []Route        `json:"routes,omitempty"`          // optional path-prefix routing
-	Health     HealthSettings `json:"health,omitempty"`
-	RateLimit  RateSettings   `json:"rate_limiter,omitempty"`
-	Cache      CacheSettings  `json:"cache,omitempty"`
-	Admin      AdminSettings  `json:"admin,omitempty"`
+	ListenAddr string         `json:"listen_addr" yaml:"listen_addr"`
+	Backends   []string       `json:"backends" yaml:"backends"`
+	Weights    []int          `json:"backend_weights,omitempty" yaml:"backend_weights,omitempty"` // optional, aligned with backends
+	Routes     []Route        `json:"routes,omitempty" yaml:"routes,omitempty"`                   // optional path-prefix routing
+	Health     HealthSettings `json:"health,omitempty" yaml:"health,omitempty"`
+	RateLimit  RateSettings   `json:"rate_limiter,omitempty" yaml:"rate_limiter,omitempty"`
+	Cache      CacheSettings  `json:"cache,omitempty" yaml:"cache,omitempty"`
+	Admin      AdminSettings  `json:"admin,omitempty" yaml:"admin,omitempty"`
+}
+
+// JSON renders the config as indented JSON (the /api/config view and the
+// persistence format for .json files).
+func (c *Config) JSON() ([]byte, error) {
+	return json.MarshalIndent(c, "", "    ")
+}
+
+// YAML renders the config as indented YAML (the persistence format for
+// .yaml/.yml files).
+func (c *Config) YAML() ([]byte, error) {
+	return yaml.Marshal(c)
 }
 
 // AdminSettings configures the management surface. Throttling and caching
 // never apply to it; auth is active only when a password is present.
 type AdminSettings struct {
-	Listen   string `json:"listen,omitempty"`   // defaults to 127.0.0.1:8090
-	Username string `json:"username,omitempty"` // defaults to "admin"
-	Password string `json:"password,omitempty"` // empty password disables the admin surface
+	Listen   string `json:"listen,omitempty" yaml:"listen,omitempty"`     // defaults to 127.0.0.1:8090
+	Username string `json:"username,omitempty" yaml:"username,omitempty"` // defaults to "admin"
+	Password string `json:"password,omitempty" yaml:"password,omitempty"` // empty password disables the admin surface
 }
 
 // Values resolves the knobs with defaults applied. Enabled reports whether
@@ -107,8 +130,8 @@ func (a AdminSettings) Values() (listen, username, password string, enabled bool
 // Route sends requests whose path starts with Prefix to its own backend
 // pool instead of the default one. The path is forwarded as-is.
 type Route struct {
-	Prefix   string   `json:"prefix"`
-	Backends []string `json:"backends"`
+	Prefix   string   `json:"prefix" yaml:"prefix"`
+	Backends []string `json:"backends" yaml:"backends"`
 }
 
 // AllBackends returns the union of default and route backends in first-seen
@@ -135,7 +158,7 @@ func (c *Config) AllBackends() []string {
 
 // CacheSettings enables the TTL response cache when ttl > 0.
 type CacheSettings struct {
-	TTL *Duration `json:"ttl,omitempty"`
+	TTL *Duration `json:"ttl,omitempty" yaml:"ttl,omitempty"`
 }
 
 // Value resolves the knob; absent or non-positive ttl disables caching.
@@ -148,8 +171,8 @@ func (s CacheSettings) Value() time.Duration {
 
 // HealthSettings controls the periodic backend probe.
 type HealthSettings struct {
-	Interval *Duration `json:"interval,omitempty"` // sweep cadence
-	Timeout  *Duration `json:"timeout,omitempty"`  // per-probe request timeout
+	Interval *Duration `json:"interval,omitempty" yaml:"interval,omitempty"` // sweep cadence
+	Timeout  *Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`   // per-probe request timeout
 }
 
 // Values resolves pointers into concrete durations with defaults applied.
@@ -167,8 +190,8 @@ func (h HealthSettings) Values() (interval, timeout time.Duration) {
 
 // RateSettings enables per-client token-bucket throttling when rate > 0.
 type RateSettings struct {
-	Rate  *float64 `json:"rate,omitempty"`  // tokens per second, 0 disables
-	Burst *int     `json:"burst,omitempty"` // bucket ceiling, needed when rate > 0
+	Rate  *float64 `json:"rate,omitempty" yaml:"rate,omitempty"`   // tokens per second, 0 disables
+	Burst *int     `json:"burst,omitempty" yaml:"burst,omitempty"` // bucket ceiling, needed when rate > 0
 }
 
 // Values resolves the knobs with defaults applied (nothing set = disabled).
@@ -220,14 +243,23 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	cfg, err := Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// Parse decodes JSON config bytes, applies defaults, and validates. It is
+// the shared tail of Load and the entry point for the admin config API.
+func Parse(data []byte) (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
-
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+		return nil, err
 	}
 	return &cfg, nil
 }

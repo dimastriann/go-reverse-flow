@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -319,6 +320,70 @@ func TestRateSettingsResolution(t *testing.T) {
 				t.Errorf("Values() = (%v, %v), want (%v, %v)", gotRate, gotBurst, tt.wantRate, tt.wantBurst)
 			}
 		})
+	}
+}
+
+// TestParseBytes covers the admin-API entry point: valid JSON applies
+// defaults, invalid JSON errors.
+func TestParseBytes(t *testing.T) {
+	cfg, err := Parse([]byte(`{"backends":["http://a:1"],"health":{"interval":"700ms"}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.ListenAddr != DefaultListenAddr {
+		t.Errorf("ListenAddr = %q, want default", cfg.ListenAddr)
+	}
+	interval, _ := cfg.Health.Values()
+	if interval != 700*time.Millisecond {
+		t.Errorf("interval = %v, want 700ms", interval)
+	}
+
+	if _, err := Parse([]byte(`{"backends": []}`)); err == nil {
+		t.Error("Parse(empty backends) = nil error, want validation error")
+	}
+	if _, err := Parse([]byte(`not json`)); err == nil {
+		t.Error("Parse(not json) = nil error, want error")
+	}
+}
+
+// TestDurationMarshalForms pins the human-readable rendering: JSON gets a
+// string ("45s"), not nanoseconds.
+func TestDurationMarshalForms(t *testing.T) {
+	cfg, err := Load(writeFixture(t, `{
+		"backends":["http://a:1"],
+		"cache":{"ttl":"45s"},
+		"health":{"interval":"500ms"}
+	}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	jsonOut, err := cfg.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if !strings.Contains(string(jsonOut), `"ttl": "45s"`) || !strings.Contains(string(jsonOut), `"interval": "500ms"`) {
+		t.Errorf("JSON output missing string durations:\n%s", jsonOut)
+	}
+
+	// YAML marshal -> bridge back -> parse: must round-trip the same config.
+	yamlOut, err := cfg.YAML()
+	if err != nil {
+		t.Fatalf("YAML: %v", err)
+	}
+	if !strings.Contains(string(yamlOut), "ttl: 45s") {
+		t.Errorf("YAML output missing string ttl:\n%s", yamlOut)
+	}
+	bridged, err := yamlToJSON(yamlOut)
+	if err != nil {
+		t.Fatalf("yamlToJSON: %v", err)
+	}
+	parsed, err := Parse(bridged)
+	if err != nil {
+		t.Fatalf("Parse(bridged): %v", err)
+	}
+	if !reflect.DeepEqual(cfg, parsed) {
+		t.Errorf("round-trip diverged:\norig:  %+v\nparsed: %+v", cfg, parsed)
 	}
 }
 
