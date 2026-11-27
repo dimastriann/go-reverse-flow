@@ -20,6 +20,18 @@ const (
 	// config (ops run the same config file at different ports per replica).
 	EnvListenAddr = "LISTEN_ADDR"
 
+	// EnvAdminUser / EnvAdminPassword override the admin credentials from the
+	// file config (secrets should not live in committed files).
+	EnvAdminUser     = "ADMIN_USER"
+	EnvAdminPassword = "ADMIN_PASSWORD"
+
+	// DefaultAdminListen binds the admin surface to loopback by default:
+	// exposing it is always an explicit choice.
+	DefaultAdminListen = "127.0.0.1:8090"
+
+	// DefaultAdminUser is the username when only a password is configured.
+	DefaultAdminUser = "admin"
+
 	// Default health-check settings, used when the JSON values are absent.
 	DefaultHealthInterval = 5 * time.Second
 	DefaultHealthTimeout  = time.Second
@@ -63,6 +75,33 @@ type Config struct {
 	Health     HealthSettings `json:"health,omitempty"`
 	RateLimit  RateSettings   `json:"rate_limiter,omitempty"`
 	Cache      CacheSettings  `json:"cache,omitempty"`
+	Admin      AdminSettings  `json:"admin,omitempty"`
+}
+
+// AdminSettings configures the management surface. Throttling and caching
+// never apply to it; auth is active only when a password is present.
+type AdminSettings struct {
+	Listen   string `json:"listen,omitempty"`   // defaults to 127.0.0.1:8090
+	Username string `json:"username,omitempty"` // defaults to "admin"
+	Password string `json:"password,omitempty"` // empty password disables the admin surface
+}
+
+// Values resolves the knobs with defaults applied. Enabled reports whether
+// the admin surface should start at all (a password is the on-switch).
+func (a AdminSettings) Values() (listen, username, password string, enabled bool) {
+	listen = DefaultAdminListen
+	username = DefaultAdminUser
+	if a.Listen != "" {
+		listen = a.Listen
+	}
+	if a.Username != "" {
+		username = a.Username
+	}
+	if a.Password != "" {
+		password = a.Password
+		enabled = true
+	}
+	return listen, username, password, enabled
 }
 
 // Route sends requests whose path starts with Prefix to its own backend
@@ -147,15 +186,18 @@ func (s RateSettings) Values() (rate float64, burst int) {
 
 // ApplyEnvOverride applies runtime environment overrides on top of the
 // loaded file config. lookup is injected (typically os.Getenv) so callers
-// and tests stay off the process environment. An override wins only when
-// EnvListenAddr resolves non-empty; unset/empty means the file value stands.
-// It reports whether an override was applied.
-func (c *Config) ApplyEnvOverride(lookup func(string) string) bool {
+// and tests stay off the process environment. Each override wins only when
+// it resolves non-empty; unset/empty means the file value stands.
+func (c *Config) ApplyEnvOverride(lookup func(string) string) {
 	if v := lookup(EnvListenAddr); v != "" {
 		c.ListenAddr = v
-		return true
 	}
-	return false
+	if v := lookup(EnvAdminUser); v != "" {
+		c.Admin.Username = v
+	}
+	if v := lookup(EnvAdminPassword); v != "" {
+		c.Admin.Password = v
+	}
 }
 
 // Load reads the config file at path and validates it. The format is

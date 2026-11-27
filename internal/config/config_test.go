@@ -55,39 +55,34 @@ func TestLoadCustomListenAddr(t *testing.T) {
 // asserted too so the variable name can't drift.
 func TestApplyEnvOverrideListenAddr(t *testing.T) {
 	tests := []struct {
-		name         string
-		json         string
-		env          string
-		wantAddr     string
-		wantOverride bool
+		name     string
+		json     string
+		env      string
+		wantAddr string
 	}{
 		{
-			name:         "env wins over file value",
-			json:         `{"listen_addr":":9090","backends":["http://x:1"]}`,
-			env:          ":7777",
-			wantAddr:     ":7777",
-			wantOverride: true,
+			name:     "env wins over file value",
+			json:     `{"listen_addr":":9090","backends":["http://x:1"]}`,
+			env:      ":7777",
+			wantAddr: ":7777",
 		},
 		{
-			name:         "env wins over default value",
-			json:         `{"backends":["http://x:1"]}`,
-			env:          ":7777",
-			wantAddr:     ":7777",
-			wantOverride: true,
+			name:     "env wins over default value",
+			json:     `{"backends":["http://x:1"]}`,
+			env:      ":7777",
+			wantAddr: ":7777",
 		},
 		{
-			name:         "empty env falls back to file value",
-			json:         `{"listen_addr":":9090","backends":["http://x:1"]}`,
-			env:          "",
-			wantAddr:     ":9090",
-			wantOverride: false,
+			name:     "empty env falls back to file value",
+			json:     `{"listen_addr":":9090","backends":["http://x:1"]}`,
+			env:      "",
+			wantAddr: ":9090",
 		},
 		{
-			name:         "empty env falls back to default value",
-			json:         `{"backends":["http://x:1"]}`,
-			env:          "",
-			wantAddr:     DefaultListenAddr,
-			wantOverride: false,
+			name:     "empty env falls back to default value",
+			json:     `{"backends":["http://x:1"]}`,
+			env:      "",
+			wantAddr: DefaultListenAddr,
 		},
 	}
 
@@ -98,22 +93,109 @@ func TestApplyEnvOverrideListenAddr(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 
-			var queriedKey string
+			var queriedKeys []string
 			lookup := func(key string) string {
-				queriedKey = key
-				return tt.env
+				queriedKeys = append(queriedKeys, key)
+				if key == EnvListenAddr {
+					return tt.env
+				}
+				return ""
 			}
 
-			if got := cfg.ApplyEnvOverride(lookup); got != tt.wantOverride {
-				t.Errorf("ApplyEnvOverride = %v, want %v", got, tt.wantOverride)
-			}
-			if queriedKey != EnvListenAddr {
-				t.Errorf("lookup queried %q, want %q", queriedKey, EnvListenAddr)
+			cfg.ApplyEnvOverride(lookup)
+			if len(queriedKeys) < 1 || queriedKeys[0] != EnvListenAddr {
+				t.Errorf("lookup queried %v, want %q first", queriedKeys, EnvListenAddr)
 			}
 			if cfg.ListenAddr != tt.wantAddr {
 				t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, tt.wantAddr)
 			}
 		})
+	}
+}
+
+// TestAdminSettingsResolution pins the admin knob semantics: loopback listen
+// and "admin" user by default, password as the on-switch, env-friendly shape.
+func TestAdminSettingsResolution(t *testing.T) {
+	tests := []struct {
+		name        string
+		json        string
+		wantListen  string
+		wantUser    string
+		wantPass    string
+		wantEnabled bool
+	}{
+		{
+			name:       "absent disables admin",
+			json:       `{"backends":["http://x:1"]}`,
+			wantListen: DefaultAdminListen,
+			wantUser:   DefaultAdminUser,
+		},
+		{
+			name:        "full config enables",
+			json:        `{"backends":["http://x:1"],"admin":{"listen":"0.0.0.0:8090","username":"ops","password":"s3cret"}}`,
+			wantListen:  "0.0.0.0:8090",
+			wantUser:    "ops",
+			wantPass:    "s3cret",
+			wantEnabled: true,
+		},
+		{
+			name:       "listen without password stays disabled",
+			json:       `{"backends":["http://x:1"],"admin":{"listen":"0.0.0.0:8090"}}`,
+			wantListen: "0.0.0.0:8090",
+			wantUser:   DefaultAdminUser,
+		},
+		{
+			name:        "password without user defaults the user",
+			json:        `{"backends":["http://x:1"],"admin":{"password":"pw"}}`,
+			wantListen:  DefaultAdminListen,
+			wantUser:    DefaultAdminUser,
+			wantPass:    "pw",
+			wantEnabled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Load(writeFixture(t, tt.json))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			listen, user, pass, enabled := cfg.Admin.Values()
+			if listen != tt.wantListen || user != tt.wantUser || pass != tt.wantPass || enabled != tt.wantEnabled {
+				t.Errorf("Values() = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
+					listen, user, pass, enabled, tt.wantListen, tt.wantUser, tt.wantPass, tt.wantEnabled)
+			}
+		})
+	}
+}
+
+// TestApplyEnvOverrideAdminCredentials pins the admin env precedence.
+func TestApplyEnvOverrideAdminCredentials(t *testing.T) {
+	cfg, err := Load(writeFixture(t, `{
+		"backends":["http://x:1"],
+		"admin":{"listen":"127.0.0.1:8090","username":"file-user","password":"file-pass"}
+	}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	lookup := func(key string) string {
+		switch key {
+		case EnvAdminUser:
+			return "env-user"
+		case EnvAdminPassword:
+			return "env-pass"
+		}
+		return ""
+	}
+	cfg.ApplyEnvOverride(lookup)
+
+	if cfg.Admin.Username != "env-user" || cfg.Admin.Password != "env-pass" {
+		t.Errorf("admin credentials = %q/%q, want env-user/env-pass", cfg.Admin.Username, cfg.Admin.Password)
+	}
+	listen, _, _, enabled := cfg.Admin.Values()
+	if !enabled || listen != "127.0.0.1:8090" {
+		t.Errorf("admin listen/enabled = %q/%v, want 127.0.0.1:8090/true", listen, enabled)
 	}
 }
 
@@ -468,9 +550,7 @@ func TestLoadYAMLEnvOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.ApplyEnvOverride(func(string) string { return ":7070" }) {
-		t.Fatal("ApplyEnvOverride reported no change")
-	}
+	cfg.ApplyEnvOverride(func(string) string { return ":7070" })
 	if cfg.ListenAddr != ":7070" {
 		t.Errorf("ListenAddr = %q, want :7070", cfg.ListenAddr)
 	}

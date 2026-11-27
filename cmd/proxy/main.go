@@ -42,11 +42,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	// LISTEN_ADDR beats the file's listen_addr so the same config file can
-	// serve different ports per replica — unset means the file wins as-is.
-	if cfg.ApplyEnvOverride(os.Getenv) {
-		log.Printf("config: %s override applied, listening on %s", config.EnvListenAddr, cfg.ListenAddr)
-	}
+	// Env overrides beat the file config so the same file can serve
+	// different ports/credentials per replica — unset means the file wins.
+	cfg.ApplyEnvOverride(os.Getenv)
 
 	allBackends := cfg.AllBackends()
 	parsed := make(map[string]*url.URL, len(allBackends))
