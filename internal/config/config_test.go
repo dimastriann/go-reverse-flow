@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -359,6 +360,119 @@ func TestAllBackendsUnion(t *testing.T) {
 	want := []string{"http://a:1", "http://b:2", "http://c:3"}
 	if got := cfg.AllBackends(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("AllBackends() = %v, want %v", got, want)
+	}
+}
+
+// writeFixturePath writes content to a named temp file so format-specific
+// extensions can be exercised.
+func writeFixturePath(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return path
+}
+
+// TestLoadYAMLEquivalence proves both formats produce the identical Config
+// for the same settings, including Duration parsing, weights, and routes.
+func TestLoadYAMLEquivalence(t *testing.T) {
+	jsonSrc := `{
+		"listen_addr": ":9090",
+		"backends": ["http://a:1", "http://b:2"],
+		"backend_weights": [3, 1],
+		"routes": [{"prefix": "/api", "backends": ["http://c:3"]}],
+		"health": {"interval": "500ms", "timeout": "2s"},
+		"rate_limiter": {"rate": 2.5, "burst": 10},
+		"cache": {"ttl": "45s"}
+	}`
+	yamlSrc := `listen_addr: :9090
+backends:
+  - http://a:1
+  - http://b:2
+backend_weights: [3, 1]
+routes:
+  - prefix: /api
+    backends:
+      - http://c:3
+health:
+  interval: 500ms
+  timeout: 2s
+rate_limiter:
+  rate: 2.5
+  burst: 10
+cache:
+  ttl: 45s
+`
+
+	fromJSON, err := Load(writeFixturePath(t, "config.json", jsonSrc))
+	if err != nil {
+		t.Fatalf("Load json: %v", err)
+	}
+	fromYAML, err := Load(writeFixturePath(t, "config.yaml", yamlSrc))
+	if err != nil {
+		t.Fatalf("Load yaml: %v", err)
+	}
+	if !reflect.DeepEqual(fromJSON, fromYAML) {
+		t.Errorf("configs diverge:\njson:  %+v\nyaml:  %+v", fromJSON, fromYAML)
+	}
+	if fromYAML.Cache.Value() != 45*time.Second {
+		t.Errorf("yaml cache ttl = %v, want 45s", fromYAML.Cache.Value())
+	}
+}
+
+// TestLoadYAMLExtensionVariants checks .yml and uppercase .YAML both route to
+// the YAML decoder.
+func TestLoadYAMLExtensionVariants(t *testing.T) {
+	src := "backends:\n  - http://a:1\n"
+	for _, name := range []string{"config.yml", "config.YAML", "CONFIG.Yml"} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Load(writeFixturePath(t, name, src))
+			if err != nil {
+				t.Fatalf("Load(%s): %v", name, err)
+			}
+			if cfg.ListenAddr != DefaultListenAddr {
+				t.Errorf("ListenAddr = %q, want default", cfg.ListenAddr)
+			}
+		})
+	}
+}
+
+// TestLoadInvalidYAML rejects structurally broken YAML with an error.
+func TestLoadInvalidYAML(t *testing.T) {
+	_, err := Load(writeFixturePath(t, "config.yaml", "listen_addr: [unclosed"))
+	if err == nil {
+		t.Fatal("Load on invalid YAML: got nil error, want error")
+	}
+}
+
+// TestLoadBOMStripped pins the Windows-editor scenario: a UTF-8 BOM must not
+// break either decoder.
+func TestLoadBOMStripped(t *testing.T) {
+	bom := "\xEF\xBB\xBF"
+	bomJSON := bom + `{"backends":["http://a:1"]}`
+	bomYAML := bom + "backends:\n  - http://a:1\n"
+
+	if _, err := Load(writeFixturePath(t, "config.json", bomJSON)); err != nil {
+		t.Errorf("Load json-with-BOM: %v", err)
+	}
+	if _, err := Load(writeFixturePath(t, "config.yaml", bomYAML)); err != nil {
+		t.Errorf("Load yaml-with-BOM: %v", err)
+	}
+}
+
+// TestLoadYAMLEnvOverride proves the env override applies identically on the
+// YAML path.
+func TestLoadYAMLEnvOverride(t *testing.T) {
+	cfg, err := Load(writeFixturePath(t, "config.yaml", "listen_addr: :9090\nbackends:\n  - http://a:1\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.ApplyEnvOverride(func(string) string { return ":7070" }) {
+		t.Fatal("ApplyEnvOverride reported no change")
+	}
+	if cfg.ListenAddr != ":7070" {
+		t.Errorf("ListenAddr = %q, want :7070", cfg.ListenAddr)
 	}
 }
 

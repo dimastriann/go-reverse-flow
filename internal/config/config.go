@@ -1,5 +1,5 @@
-// Package config loads the proxy configuration from a JSON file and applies
-// defaults and validation.
+// Package config loads the proxy configuration from a JSON or YAML file and
+// applies defaults and validation.
 package config
 
 import (
@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -156,11 +158,24 @@ func (c *Config) ApplyEnvOverride(lookup func(string) string) bool {
 	return false
 }
 
-// Load reads the JSON config file at path and validates it.
+// Load reads the config file at path and validates it. The format is
+// detected by file extension: .yaml/.yml parse as YAML, everything else
+// (including .json) as JSON. Both formats share one semantics path — the
+// YAML bytes are bridged to their JSON equivalent, so Duration parsing,
+// defaults, validation, and env overrides behave identically.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
+	}
+	data = stripBOM(data)
+
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
+		data, err = yamlToJSON(data)
+		if err != nil {
+			return nil, fmt.Errorf("parse config %s: %w", path, err)
+		}
 	}
 
 	var cfg Config
@@ -173,6 +188,24 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// stripBOM removes a leading UTF-8 byte-order mark, which Windows editors
+// add silently and both the JSON and YAML decoders reject.
+func stripBOM(data []byte) []byte {
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		return data[3:]
+	}
+	return data
+}
+
+// yamlToJSON converts YAML bytes to their JSON equivalent.
+func yamlToJSON(data []byte) ([]byte, error) {
+	var v any
+	if err := yaml.Unmarshal(data, &v); err != nil {
+		return nil, err
+	}
+	return json.Marshal(v)
 }
 
 // applyDefaults fills in sane defaults for empty fields.
