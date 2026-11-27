@@ -136,7 +136,9 @@ func main() {
 	mux.Handle("/", chain)
 
 	// Optional admin surface on its own listener: never cached, throttled,
-	// or routed; dies with the same signal context as the proxy.
+	// or routed; dies with the same signal context as the proxy. /api/status
+	// requires Basic Auth; the embedded dashboard at / is static and
+	// credential-free (it only reads, and prompts for the API credentials).
 	adminListen, adminUser, adminPass, adminEnabled := cfg.Admin.Values()
 	if adminEnabled {
 		startedAt := time.Now()
@@ -163,9 +165,13 @@ func main() {
 				RateBurst:   burst,
 			}
 		}
+		adminAPI := admin.New(adminUser, adminPass, statusSource)
+		adminMux := http.NewServeMux()
+		adminMux.Handle("/api/status", adminAPI.Handler())
+		adminMux.Handle("/", admin.UIHandler())
 		adminSrv := &http.Server{
 			Addr:              adminListen,
-			Handler:           admin.New(adminUser, adminPass, statusSource).Handler(),
+			Handler:           adminMux,
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
