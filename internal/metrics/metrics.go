@@ -106,6 +106,18 @@ func (c *Collector) render() []byte {
 	return []byte(out)
 }
 
+// Snapshot returns a copy of the per-backend request counters, sorted by
+// backend URL for stable rendering.
+func (c *Collector) Snapshot() map[string]uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]uint64, len(c.counters))
+	for url, counter := range c.counters {
+		out[url] = counter.Load()
+	}
+	return out
+}
+
 // Handler serves the exposition endpoint.
 func (c *Collector) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

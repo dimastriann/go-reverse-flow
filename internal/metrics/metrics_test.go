@@ -40,6 +40,25 @@ func TestCountAndRender(t *testing.T) {
 	}
 }
 
+// TestSnapshotCopiesAndCounts pins the status-API data source.
+func TestSnapshotCopiesAndCounts(t *testing.T) {
+	c := New()
+	c.Count("http://b:2")
+	c.Count("http://a:1")
+	c.Count("http://a:1")
+
+	snap := c.Snapshot()
+	if snap["http://a:1"] != 2 || snap["http://b:2"] != 1 {
+		t.Errorf("snapshot = %v, want a:2 b:1", snap)
+	}
+
+	// Mutating the returned map must not affect the collector.
+	snap["http://a:1"] = 999
+	if again := c.Snapshot(); again["http://a:1"] != 2 {
+		t.Errorf("snapshot aliasing detected: %v", again)
+	}
+}
+
 // TestConcurrentCounting hammers Count from goroutines; totals must land
 // exactly (atomics, no lost updates).
 func TestConcurrentCounting(t *testing.T) {
