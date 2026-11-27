@@ -27,6 +27,8 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 | ✅ v0.6.0 | 🔒 Cache hardening (credentials/Range bypass, partial-content rejection, bounded buffering + entry count) |
 | ✅ v0.6.0 | 🌍 `LISTEN_ADDR` env override (file config stays portable across replicas) |
 | ✅ v0.7.0 | 🧹 Cache invalidation endpoint (`POST /cache/purge`, 204 + `X-Purged-Entries`, `405` for other methods) |
+| ✅ v0.8.0 | 📄 YAML config (extension auto-detection, one semantics path for both formats) |
+| ✅ v0.9.0 | 🖥️ Admin dashboard (auth-protected separate listener, `GET /api/status`, embedded Svelte 5 UI) |
 
 ## 🏗️ Architecture
 
@@ -51,6 +53,16 @@ Observability and defense come on the same listener:
 - `POST /cache/purge` — invalidates every cached entry (only mounted while `cache.ttl` is positive); answers `204` with `X-Purged-Entries: <n>` and refuses other methods with `405`, so a stray GET or crawler cannot wipe the cache
 - `rate_limiter` config — optional per-client token bucket: over-limit clients get `429` + computed `Retry-After`, still logged; `/metrics` and `/cache/purge` are never throttled
 
+Management runs on a **separate admin listener** (default `127.0.0.1:8090`,
+Basic-Auth protected via `admin.username`/`admin.password` or
+`ADMIN_USER`/`ADMIN_PASSWORD`; the admin surface starts only when a password
+is present):
+
+- `GET /api/status` — JSON: version, uptime, listen addresses, per-backend
+  health + request counters, cache/rate-limit knobs
+- `/` — the embedded dashboard: status cards, backend health table with live
+  counters (5s auto-refresh), cache purge shortcut, `/metrics` link
+
 ## 🛠️ Tech Stack
 
 - Go 1.27+
@@ -62,7 +74,7 @@ Observability and defense come on the same listener:
 .
 ├── cmd/proxy/          # Application entry point
 ├── internal/
-│   ├── config/         # JSON config loader, validation, duration parsing
+│   ├── config/         # JSON/YAML config loader, validation, duration parsing
 │   ├── balancer/       # Lock-free round-robin + smooth weighted picker
 │   ├── proxy/          # httputil.ReverseProxy wiring, health-aware routing,
 │   │                   #   retry-once for idempotent requests
@@ -71,7 +83,8 @@ Observability and defense come on the same listener:
 │   ├── logging/        # Access-log middleware (backend attribution via ctx)
 │   ├── metrics/        # Prometheus-style counters + gauges, /metrics
 │   ├── ratelimit/      # Per-client token bucket, 429 + Retry-After
-│   └── cache/          # TTL response cache with X-Cache observability
+│   ├── cache/          # TTL response cache with X-Cache observability
+│   └── admin/          # Auth-protected admin API + embedded Svelte dashboard
 ├── config/             # Configuration files (JSON, incl. docker demo)
 ├── Dockerfile          # Multi-stage build on a scratch runtime image
 ├── docker-compose.yml  # One-command 3-backend demo stack
@@ -180,7 +193,7 @@ service-name DNS resolving the baked backend URLs automatically.
 
 ## 🗺️ Roadmap
 
-`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → `v0.8.0` YAML config → next: admin API + management dashboard (auth-protected, separate listener), least-connections, Grafana dashboard JSON.
+`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → `v0.8.0` YAML config → `v0.9.0` admin dashboard → next: config editing + hot reload, least-connections, Grafana dashboard JSON.
 
 ## 📚 What I'm Learning
 
