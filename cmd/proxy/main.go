@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dimastriann/go-reverse-flow/internal/admin"
 	"github.com/dimastriann/go-reverse-flow/internal/balancer"
 	"github.com/dimastriann/go-reverse-flow/internal/cache"
 	"github.com/dimastriann/go-reverse-flow/internal/config"
@@ -113,7 +114,8 @@ func main() {
 		cacheLayer, proxied = cache.NewCache(proxied, ttl)
 		log.Printf("cache: %s ttl for cacheable GET/HEAD responses", ttl)
 	}
-	if rate, burst := cfg.RateLimit.Values(); rate > 0 {
+	rate, burst := cfg.RateLimit.Values()
+	if rate > 0 {
 		proxied = ratelimit.New(proxied, rate, burst)
 		log.Printf("ratelimit: %.2f req/s per client, burst %d", rate, burst)
 	}
@@ -132,6 +134,54 @@ func main() {
 		log.Printf("cache: POST /cache/purge invalidates every entry")
 	}
 	mux.Handle("/", chain)
+
+	// Optional admin surface on its own listener: never cached, throttled,
+	// or routed; dies with the same signal context as the proxy.
+	adminListen, adminUser, adminPass, adminEnabled := cfg.Admin.Values()
+	if adminEnabled {
+		startedAt := time.Now()
+		statusSource := func() admin.Status {
+			requests := scrape.Snapshot()
+			statuses := checker.Statuses()
+			backends := make([]admin.BackendStatus, 0, len(allBackends))
+			for _, raw := range allBackends {
+				backends = append(backends, admin.BackendStatus{
+					URL:      raw,
+					Healthy:  statuses[raw],
+					Requests: requests[raw],
+				})
+			}
+			return admin.Status{
+				Version:     "v0.9.0",
+				Uptime:      time.Since(startedAt).Round(time.Second).String(),
+				Listen:      cfg.ListenAddr,
+				AdminListen: adminListen,
+				StartedAt:   startedAt,
+				Backends:    backends,
+				CacheTTL:    cfg.Cache.Value().String(),
+				RateLimit:   rate,
+				RateBurst:   burst,
+			}
+		}
+		adminSrv := &http.Server{
+			Addr:              adminListen,
+			Handler:           admin.New(adminUser, adminPass, statusSource).Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			log.Printf("admin: listening on %s (user %s)", adminListen, adminUser)
+			if err := adminSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("admin: %v", err)
+			}
+		}()
+		defer func() {
+			shCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+			_ = adminSrv.Shutdown(shCtx)
+		}()
+	} else {
+		log.Printf("admin: disabled (set admin.password or ADMIN_PASSWORD to enable)")
+	}
 
 	// ReadHeaderTimeout guards slowloris-style connections; other timeouts
 	// stay at zero because proxied streams may legitimately be long-lived.
