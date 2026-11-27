@@ -30,6 +30,7 @@ This project demonstrates core backend and systems concepts: HTTP routing, concu
 | ✅ v0.8.0 | 📄 YAML config (extension auto-detection, one semantics path for both formats) |
 | ✅ v0.9.0 | 🖥️ Admin dashboard (auth-protected separate listener, `GET /api/status`, embedded Svelte 5 UI) |
 | ✅ v0.10.0 | 🔥 Hot reload (`GET/PUT /api/config` + `POST /api/reload`, atomic generation swap, no restart) |
+| ✅ v0.11.0 | 🎛️ Editor UI (routes/backends/weights editing, access-log view, dark dashboard) |
 
 ## 🏗️ Architecture
 
@@ -202,7 +203,7 @@ service-name DNS resolving the baked backend URLs automatically.
 
 ## 🗺️ Roadmap
 
-`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → `v0.8.0` YAML config → `v0.9.0` admin dashboard → `v0.10.0` hot reload → next: editor UI forms, least-connections, Grafana dashboard JSON.
+`v0.1.0` round-robin proxy → `v0.2.0` health checks + logging → `v0.3.0` metrics + Docker + rate limiting → `v0.4.0` retry-once + weighted balancing + TTL cache → `v0.5.0` path-prefix routing → `v0.6.0` cache hardening + env override → `v0.7.0` cache invalidation endpoint → `v0.8.0` YAML config → `v0.9.0` admin dashboard → `v0.10.0` hot reload → `v0.11.0` editor UI + access-log view → next: least-connections, Grafana dashboard JSON.
 
 ## 📚 What I'm Learning
 
