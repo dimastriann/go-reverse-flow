@@ -249,6 +249,64 @@ func TestReloadEndpoint(t *testing.T) {
 	}
 }
 
+// TestLogsEndpoint covers GET /api/logs: entries pass through, ?limit=
+// bounds the request, non-GET is refused, and the route disappears without
+// the hook.
+func TestLogsEndpoint(t *testing.T) {
+	var lastLimit int
+	s := New("admin", "s3cret", fixedStatus, WithLogTail(func(limit int) any {
+		lastLimit = limit
+		return []map[string]any{{"path": "/x", "status": 200}}
+	}))
+	h := s.Handler()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/logs?limit=25", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if lastLimit != 25 {
+		t.Errorf("limit passed = %d, want 25", lastLimit)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if len(entries) != 1 || entries[0]["path"] != "/x" {
+		t.Errorf("entries = %v", entries)
+	}
+
+	// Default limit when absent.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/logs", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if lastLimit != 100 {
+		t.Errorf("default limit = %d, want 100", lastLimit)
+	}
+
+	// POST refused.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/logs", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST logs status = %d, want 405", rec.Code)
+	}
+
+	// Bare server: no route.
+	bare := New("admin", "s3cret", fixedStatus).Handler()
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/logs", nil)
+	req.SetBasicAuth("admin", "s3cret")
+	bare.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("bare logs status = %d, want 404", rec.Code)
+	}
+}
+
 // TestUptimeAdvances checks the uptime reflects the injected clock.
 func TestUptimeAdvances(t *testing.T) {
 	start := time.Now()

@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strconv"
 	"time"
 )
 
@@ -49,9 +50,10 @@ type Server struct {
 	startedAt time.Time
 	now       func() time.Time
 
-	configSource func() any         // optional: GET /api/config
-	applyFn      func([]byte) error // optional: PUT /api/config
-	reloadFn     func() error       // optional: POST /api/reload
+	configSource func() any          // optional: GET /api/config
+	applyFn      func([]byte) error  // optional: PUT /api/config
+	reloadFn     func() error        // optional: POST /api/reload
+	logTail      func(limit int) any // optional: GET /api/logs
 }
 
 // Option configures a Server.
@@ -89,6 +91,14 @@ func WithReload(fn func() error) Option {
 	}
 }
 
+// WithLogTail registers the GET /api/logs handler: it receives the requested
+// limit and returns the recent access-log entries as JSON.
+func WithLogTail(fn func(limit int) any) Option {
+	return func(s *Server) {
+		s.logTail = fn
+	}
+}
+
 // New builds the admin Server. Credentials come from the caller's config;
 // callers must gate construction on them being non-empty (a password is the
 // documented on-switch).
@@ -116,6 +126,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.reloadFn != nil {
 		mux.HandleFunc("/api/reload", s.handleReload)
+	}
+	if s.logTail != nil {
+		mux.HandleFunc("/api/logs", s.handleLogs)
 	}
 	return s.requireAuth(mux)
 }
@@ -174,6 +187,22 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
+}
+
+// handleLogs serves GET /api/logs with a bounded ?limit= (default 100).
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+	writeJSON(w, http.StatusOK, s.logTail(limit))
 }
 
 // readAll bounds and drains a request body.
