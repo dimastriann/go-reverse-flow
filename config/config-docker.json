@@ -8,5 +8,10 @@
     "health": {
         "interval": "1s",
         "timeout": "800ms"
+    },
+    "admin": {
+        "listen": ":8090",
+        "username": "admin",
+        "password": "demo"
     }
 }
