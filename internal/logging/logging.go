@@ -59,6 +59,7 @@ func (w *recordingWriter) Write(b []byte) (int, error) {
 type Middleware struct {
 	next   http.Handler
 	logger *slog.Logger
+	ring   *Ring // optional: records entries for the admin tail view
 }
 
 // Option configures the Middleware.
@@ -68,6 +69,14 @@ type Option func(*Middleware)
 func WithLogger(l *slog.Logger) Option {
 	return func(m *Middleware) {
 		m.logger = l
+	}
+}
+
+// WithRing records every access entry into the bounded buffer, making the
+// recent request history available to the admin tail view.
+func WithRing(r *Ring) Option {
+	return func(m *Middleware) {
+		m.ring = r
 	}
 }
 
@@ -99,6 +108,18 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if status == 0 {
 		// No WriteHeader and no body: Go's http server would have written 200.
 		status = http.StatusOK
+	}
+
+	if m.ring != nil {
+		m.ring.add(Entry{
+			Time:     start,
+			Remote:   r.RemoteAddr,
+			Method:   r.Method,
+			Path:     r.URL.Path,
+			Backend:  backend,
+			Status:   status,
+			Duration: time.Since(start).Round(time.Microsecond),
+		})
 	}
 
 	m.logger.Info("request",
